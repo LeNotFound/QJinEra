@@ -105,6 +105,11 @@ class QJinEraPlugin(Plugin):
             delay = random.uniform(0.3, 1.2) + (len(msg) * 0.05)
             await asyncio.sleep(delay)
             await event.reply(msg)
+            
+            # Record bot's own message to context
+            # We use event.self_id as bot's user_id
+            bot_id = str(getattr(event, "self_id", "bot"))
+            topic_manager.add_bot_message(str(event.group_id), msg, bot_id, "柒槿年")
 
     async def rule(self) -> bool:
         return isinstance(self.event, GroupMessageEvent)

@@ -77,6 +77,37 @@ class TopicManager:
         
         return self._build_context(group_id, user_id, content, now)
 
+    def add_bot_message(self, group_id: str, content: str, bot_id: str, nickname: str = "QJinEra"):
+        """
+        Record a message sent by the bot itself.
+        """
+        now = time.time()
+        current_topic = self.active_topics.get(group_id)
+        
+        # If no active topic (rare, but possible if bot initiates), create one
+        if not current_topic:
+            topic_id = storage.create_topic(group_id, now)
+            current_topic = {
+                "topic_id": topic_id,
+                "last_msg_time": now,
+                "messages": [],
+                "summary": None
+            }
+            self.active_topics[group_id] = current_topic
+            
+        # Update current topic
+        current_topic["last_msg_time"] = now
+        current_topic["messages"].append({
+            "user_id": bot_id,
+            "nickname": nickname,
+            "content": content,
+            "timestamp": now
+        })
+        
+        # Save message to DB
+        storage.add_message(current_topic["topic_id"], bot_id, content, now, nickname)
+        self.group_last_activity[group_id] = now
+
     def _archive_topic(self, group_id: str):
         topic = self.active_topics.get(group_id)
         if topic:
