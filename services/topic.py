@@ -19,7 +19,7 @@ class TopicManager:
     def get_current_topic(self, group_id: str) -> Dict:
         return self.active_topics.get(group_id)
 
-    def handle_message(self, group_id: str, user_id: str, content: str) -> Dict:
+    def handle_message(self, group_id: str, user_id: str, content: str, nickname: str = "") -> Dict:
         """
         Process a new message and determine if it belongs to the current topic or starts a new one.
         Returns the context for the LLM.
@@ -52,12 +52,13 @@ class TopicManager:
         current_topic["last_msg_time"] = now
         current_topic["messages"].append({
             "user_id": user_id,
+            "nickname": nickname,
             "content": content,
             "timestamp": now
         })
         
         # Save message to DB
-        storage.add_message(current_topic["topic_id"], user_id, content, now)
+        storage.add_message(current_topic["topic_id"], user_id, content, now, nickname)
         
         self.group_last_activity[group_id] = now
         
@@ -91,7 +92,11 @@ class TopicManager:
                     break
         
         # Get recent messages (last 10)
-        recent_msgs = [f"{m['user_id']}: {m['content']}" for m in messages[-10:]]
+        # Use nickname if available, otherwise fallback to user_id
+        recent_msgs = []
+        for m in messages[-10:]:
+            sender_name = m.get("nickname") or m["user_id"]
+            recent_msgs.append(f"{sender_name}: {m['content']}")
         
         return {
             "persona": settings.get("prompts", "persona"),

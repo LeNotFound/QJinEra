@@ -47,11 +47,22 @@ pip install -r requirements.txt
 2. 修改 `config.toml` 文件，填入你的 LLM API Key：
 
 ```toml
+[bot]
+name = "不知道该叫啥"
+plugins = ["plugins.core", "plugins.scheduler"]
+adapters = ["alicebot.adapter.cqhttp"]
+
+[adapter.cqhttp]
+adapter_type = "ws"
+host = "127.0.0.1"
+port = 3001
+
 [llm]
-api_base = "https://api.openai.com/v1" # 或其他中转地址
+api_base = "https://your-api-endpoint/v1" 
 api_key = "sk-xxxxxxxx"
-judge_model = "gpt-3.5-turbo" # 推荐使用便宜的小模型
-chat_model = "gpt-4"          # 推荐使用高质量模型
+proxy = "http://127.0.0.1:10809" # 可选代理
+judge_model = "gemini-2.5-flash-lite" # 推荐使用便宜且快的小模型
+chat_model = "gemini-2.5-flash"       # 推荐使用高质量模型
 ```
 
 ### 4. 运行

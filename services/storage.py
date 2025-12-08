@@ -36,11 +36,21 @@ class Storage:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             topic_id INTEGER,
             user_id TEXT,
+            nickname TEXT,
             content TEXT,
             timestamp REAL,
             FOREIGN KEY(topic_id) REFERENCES topics(id)
         )
         ''')
+        
+        # Check if nickname column exists in messages (for migration)
+        cursor.execute("PRAGMA table_info(messages)")
+        columns = [info[1] for info in cursor.fetchall()]
+        if "nickname" not in columns:
+            try:
+                cursor.execute("ALTER TABLE messages ADD COLUMN nickname TEXT")
+            except Exception as e:
+                print(f"Migration warning: {e}")
         
         conn.commit()
         conn.close()
@@ -81,20 +91,20 @@ class Storage:
         conn.commit()
         conn.close()
 
-    def add_message(self, topic_id: int, user_id: str, content: str, timestamp: float):
+    def add_message(self, topic_id: int, user_id: str, content: str, timestamp: float, nickname: str = ""):
         conn = self.get_connection()
         cursor = conn.cursor()
-        cursor.execute('INSERT INTO messages (topic_id, user_id, content, timestamp) VALUES (?, ?, ?, ?)', 
-                       (topic_id, user_id, content, timestamp))
+        cursor.execute('INSERT INTO messages (topic_id, user_id, nickname, content, timestamp) VALUES (?, ?, ?, ?, ?)', 
+                       (topic_id, user_id, nickname, content, timestamp))
         conn.commit()
         conn.close()
 
     def get_topic_messages(self, topic_id: int, limit: int = 50) -> List[Dict]:
         conn = self.get_connection()
         cursor = conn.cursor()
-        cursor.execute('SELECT user_id, content, timestamp FROM messages WHERE topic_id = ? ORDER BY timestamp ASC LIMIT ?', (topic_id, limit))
+        cursor.execute('SELECT user_id, nickname, content, timestamp FROM messages WHERE topic_id = ? ORDER BY timestamp ASC LIMIT ?', (topic_id, limit))
         rows = cursor.fetchall()
         conn.close()
-        return [{"user_id": r[0], "content": r[1], "timestamp": r[2]} for r in rows]
+        return [{"user_id": r[0], "nickname": r[1], "content": r[2], "timestamp": r[3]} for r in rows]
 
 storage = Storage()

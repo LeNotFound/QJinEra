@@ -18,8 +18,13 @@ class QJinEraPlugin(Plugin):
         group_id = str(event.group_id)
         content = event.get_plain_text()
         
+        # Get nickname if available
+        nickname = ""
+        if hasattr(event, "sender") and hasattr(event.sender, "nickname"):
+            nickname = event.sender.nickname
+
         # 1. Topic Management & Context Building
-        context = topic_manager.handle_message(group_id, user_id, content)
+        context = topic_manager.handle_message(group_id, user_id, content, nickname)
         
         # Check if mentioned
         # 1. Check event.to_me (AliceBot standard)
