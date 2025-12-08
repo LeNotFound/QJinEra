@@ -7,6 +7,10 @@ from services.llm import llm_service
 from config import settings
 
 class QJinEraPlugin(Plugin):
+    # Class-level dictionary to store debounce tasks
+    # Key: group_id, Value: asyncio.Task
+    _debounce_tasks: dict[str, asyncio.Task] = {}
+
     async def handle(self) -> None:
         event = self.event
         if not isinstance(event, GroupMessageEvent):
@@ -23,7 +27,7 @@ class QJinEraPlugin(Plugin):
         if hasattr(event, "sender") and hasattr(event.sender, "nickname"):
             nickname = event.sender.nickname
 
-        # 1. Topic Management & Context Building
+        # 1. Topic Management & Context Building (Always update immediately)
         context = topic_manager.handle_message(group_id, user_id, content, nickname)
         
         # Check if mentioned
@@ -33,36 +37,59 @@ class QJinEraPlugin(Plugin):
         
         if not is_mentioned:
             # Fallback: Check raw message for CQ code
-            # We need to get the bot's self_id. In AliceBot, event.adapter.bot usually holds the bot instance, 
-            # but event.self_id is more direct for the received event context.
             self_id = getattr(event, "self_id", None)
             if self_id:
-                # Check if the message string representation contains the CQ code
-                # event.message is a Message object, str(event.message) should give the CQ code string
                 if f"[CQ:at,qq={self_id}]" in str(event.message):
                      is_mentioned = True
         
         if is_mentioned:
             context["is_at_mentioned"] = True
-        
-        # 2. Judge Interruption
-        should_intervene = False
-        if context["is_at_mentioned"]:
+            # If mentioned, cancel any pending debounce task for this group to avoid double reply
+            if group_id in self._debounce_tasks:
+                self._debounce_tasks[group_id].cancel()
+                print(f"[CorePlugin] Mentioned! Cancelled pending debounce for group {group_id}")
+            
             print(f"[CorePlugin] Bot was mentioned. Intervening directly.")
-            should_intervene = True
-        else:
-            print(f"[CorePlugin] Not mentioned. Asking Judge Model...")
+            await self.process_chat(context, event)
+            return
+
+        # 2. Debounce for Judge
+        # Cancel existing task for this group
+        if group_id in self._debounce_tasks:
+            self._debounce_tasks[group_id].cancel()
+            
+        # Schedule new task
+        # Use the current event for replying (it's the latest one)
+        debounce_time = settings.get("topic", "debounce_seconds", 3.0)
+        task = asyncio.create_task(self.debounce_and_judge(group_id, event, debounce_time))
+        self._debounce_tasks[group_id] = task
+
+    async def debounce_and_judge(self, group_id: str, event, delay: float):
+        try:
+            await asyncio.sleep(delay)
+            
+            # Get fresh context (re-fetch because new messages might have arrived)
+            context = topic_manager.get_latest_context(group_id)
+            if not context:
+                return
+
+            print(f"[CorePlugin] Debounce finished. Asking Judge Model...")
             judge_result = await llm_service.judge_interruption(context)
             should_intervene = judge_result.get("should_intervene", False)
             print(f"[CorePlugin] Judge Result: {should_intervene}")
             
-        if not should_intervene:
-            return
+            if should_intervene:
+                await self.process_chat(context, event)
+                
+        except asyncio.CancelledError:
+            # This is expected when a new message arrives before the timer expires
+            pass
+        except Exception as e:
+            print(f"[CorePlugin] Error in debounce task: {e}")
 
+    async def process_chat(self, context: dict, event):
         print(f"[CorePlugin] Generating Chat Response...")
         # 3. Generate Chat Response
-        # Add flag to request summary if needed (e.g. every 10 messages or if context is long)
-        # For MVP, let's just always ask for it or rely on LLM decision
         context["should_return_summary"] = True 
         
         chat_result = await llm_service.generate_chat(context)
@@ -70,7 +97,7 @@ class QJinEraPlugin(Plugin):
         summary = chat_result.get("summary")
         
         if summary:
-            topic_manager.update_summary(group_id, summary)
+            topic_manager.update_summary(str(event.group_id), summary)
             
         # 4. Send Messages
         for msg in messages:

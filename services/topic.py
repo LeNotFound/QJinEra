@@ -19,6 +19,19 @@ class TopicManager:
     def get_current_topic(self, group_id: str) -> Dict:
         return self.active_topics.get(group_id)
 
+    def get_latest_context(self, group_id: str) -> Optional[Dict]:
+        topic = self.active_topics.get(group_id)
+        if not topic or not topic["messages"]:
+            return None
+            
+        last_msg = topic["messages"][-1]
+        return self._build_context(
+            group_id, 
+            last_msg["user_id"], 
+            last_msg["content"], 
+            last_msg["timestamp"]
+        )
+
     def handle_message(self, group_id: str, user_id: str, content: str, nickname: str = "") -> Dict:
         """
         Process a new message and determine if it belongs to the current topic or starts a new one.
