@@ -63,4 +63,12 @@ class LLMService:
         system_prompt = settings.get("prompts", "proactive_system")
         return await self._call_llm(self.chat_model, system_prompt, "请开始你的表演")
 
+    async def analyze_user(self, current_profile: str, recent_messages: List[str]) -> str:
+        """
+        Call the model to update user profile.
+        """
+        system_prompt = settings.get("prompts", "profiler_system")
+        user_content = f"Current Profile: {current_profile}\n\nRecent Messages:\n" + "\n".join(recent_messages)
+        return await self._call_llm(self.judge_model, system_prompt, user_content, json_mode=False)
+
 llm_service = LLMService()

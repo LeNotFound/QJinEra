@@ -63,6 +63,10 @@ class QJinEraPlugin(Plugin):
         debounce_time = settings.get("topic", "debounce_seconds", 3.0)
         task = asyncio.create_task(self.debounce_and_judge(group_id, event, debounce_time))
         self._debounce_tasks[group_id] = task
+        
+        # 4. User Profile Update (Async, Low Priority)
+        if random.random() < 0.1:
+            asyncio.create_task(self.update_user_profile(group_id, user_id))
 
     async def debounce_and_judge(self, group_id: str, event, delay: float):
         try:
@@ -99,17 +103,43 @@ class QJinEraPlugin(Plugin):
         if summary:
             topic_manager.update_summary(str(event.group_id), summary)
             
-        # 4. Send Messages
         for msg in messages:
             # Simulate typing delay
             delay = random.uniform(0.3, 1.2) + (len(msg) * 0.05)
             await asyncio.sleep(delay)
             await event.reply(msg)
             
-            # Record bot's own message to context
-            # We use event.self_id as bot's user_id
+            # Record bot's own message
             bot_id = str(getattr(event, "self_id", "bot"))
             topic_manager.add_bot_message(str(event.group_id), msg, bot_id, "柒槿年")
+
+    async def update_user_profile(self, group_id: str, user_id: str):
+        try:
+            from services.storage import storage
+            user = storage.get_user(group_id, user_id)
+            if not user:
+                return
+
+            # Get recent messages from this user in this group
+            topic = topic_manager.get_current_topic(group_id)
+            if not topic:
+                return
+                
+            user_msgs = [m["content"] for m in topic["messages"] if m["user_id"] == user_id]
+            if len(user_msgs) < 3: # Not enough data
+                return
+
+            print(f"[CorePlugin] Updating profile for user {user_id}...")
+            current_desc = user.get("description", "")
+            new_desc = await llm_service.analyze_user(current_desc, user_msgs[-10:]) 
+            
+            if new_desc and new_desc != current_desc:
+                storage.update_user_description(group_id, user_id, new_desc)
+                print(f"[CorePlugin] Updated profile for {user_id}: {new_desc}")
+                
+        except Exception as e:
+            print(f"[CorePlugin] Error updating user profile: {e}")
+
 
     async def rule(self) -> bool:
         return isinstance(self.event, GroupMessageEvent)

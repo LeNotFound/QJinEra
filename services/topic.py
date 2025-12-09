@@ -15,11 +15,38 @@ class TopicManager:
         # Track last activity time for all groups to support active speaking
         # {group_id: float_timestamp}
         self.group_last_activity: Dict[str, float] = {}
+        
+        # Restore active topics from DB
+        self._restore_active_topics()
+
+    def _restore_active_topics(self):
+        # This is a bit tricky since we don't know all group_ids.
+        # But we can just load lazily or query distinct group_ids from topics.
+        # For now, let's just rely on lazy loading or simple check when handle_message is called?
+        # Actually, handle_message checks self.active_topics. If empty, it starts new.
+        # We should try to load from DB if memory is empty.
+        pass
 
     def get_current_topic(self, group_id: str) -> Dict:
+        if group_id not in self.active_topics:
+            self._try_restore_topic(group_id)
         return self.active_topics.get(group_id)
 
+    def _try_restore_topic(self, group_id: str):
+        # Try to load the latest topic from DB
+        topic = storage.get_latest_active_topic(group_id)
+        if topic:
+            # Check if it's stale
+            now = time.time()
+            if now - topic["last_msg_time"] <= self.topic_gap:
+                self.active_topics[group_id] = topic
+                self.group_last_activity[group_id] = topic["last_msg_time"]
+                print(f"[TopicManager] Restored active topic for group {group_id}")
+
     def get_latest_context(self, group_id: str) -> Optional[Dict]:
+        if group_id not in self.active_topics:
+            self._try_restore_topic(group_id)
+            
         topic = self.active_topics.get(group_id)
         if not topic or not topic["messages"]:
             return None
@@ -38,6 +65,13 @@ class TopicManager:
         Returns the context for the LLM.
         """
         now = time.time()
+        
+        # Update user info
+        storage.update_user(group_id, user_id, nickname, now)
+        
+        if group_id not in self.active_topics:
+            self._try_restore_topic(group_id)
+            
         current_topic = self.active_topics.get(group_id)
         
         is_new_topic = False
@@ -86,14 +120,19 @@ class TopicManager:
         
         # If no active topic (rare, but possible if bot initiates), create one
         if not current_topic:
-            topic_id = storage.create_topic(group_id, now)
-            current_topic = {
-                "topic_id": topic_id,
-                "last_msg_time": now,
-                "messages": [],
-                "summary": None
-            }
-            self.active_topics[group_id] = current_topic
+            if group_id not in self.active_topics:
+                self._try_restore_topic(group_id)
+            current_topic = self.active_topics.get(group_id)
+            
+            if not current_topic:
+                topic_id = storage.create_topic(group_id, now)
+                current_topic = {
+                    "topic_id": topic_id,
+                    "last_msg_time": now,
+                    "messages": [],
+                    "summary": None
+                }
+                self.active_topics[group_id] = current_topic
             
         # Update current topic
         current_topic["last_msg_time"] = now
@@ -141,11 +180,23 @@ class TopicManager:
         for m in messages[-10:]:
             sender_name = m.get("nickname") or m["user_id"]
             recent_msgs.append(f"{sender_name}: {m['content']}")
+            
+        # Get Long-term memory (recent topics)
+        past_topics = storage.get_recent_topics(group_id, limit=5)
+        past_topics_summary = "\n".join([f"- {t['summary']}" for t in past_topics if t['summary']])
+        
+        # Get User Profile
+        user_profile = storage.get_user(group_id, user_id)
+        user_desc = ""
+        if user_profile and user_profile.get("description"):
+            user_desc = f"Current Speaker ({user_profile['nickname']}): {user_profile['description']}"
         
         return {
             "persona": settings.get("prompts", "persona"),
             "recent_messages": recent_msgs,
             "topic_summary": topic.get("summary"),
+            "past_topics": past_topics_summary,
+            "user_profile": user_desc,
             "latest_message": content,
             "time_since_last_group_message": time_since_last_group,
             "time_since_last_user_message": time_since_last_user,

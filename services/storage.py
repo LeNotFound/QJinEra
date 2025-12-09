@@ -42,6 +42,19 @@ class Storage:
             FOREIGN KEY(topic_id) REFERENCES topics(id)
         )
         ''')
+
+        # Create users table for user profiles
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            user_id TEXT,
+            group_id TEXT,
+            nickname TEXT,
+            description TEXT,
+            interaction_count INTEGER DEFAULT 0,
+            last_active_time REAL,
+            PRIMARY KEY (user_id, group_id)
+        )
+        ''')
         
         # Check if nickname column exists in messages (for migration)
         cursor.execute("PRAGMA table_info(messages)")
@@ -107,4 +120,112 @@ class Storage:
         conn.close()
         return [{"user_id": r[0], "nickname": r[1], "content": r[2], "timestamp": r[3]} for r in rows]
 
+    def get_user(self, group_id: str, user_id: str) -> Optional[Dict[str, Any]]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM users WHERE group_id = ? AND user_id = ?', (group_id, user_id))
+        row = cursor.fetchone()
+        conn.close()
+        
+        if row:
+            return {
+                "user_id": row[0],
+                "group_id": row[1],
+                "nickname": row[2],
+                "description": row[3],
+                "interaction_count": row[4],
+                "last_active_time": row[5]
+            }
+        return None
+
+    def update_user(self, group_id: str, user_id: str, nickname: str, timestamp: float):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        # Check if user exists
+        cursor.execute('SELECT interaction_count FROM users WHERE group_id = ? AND user_id = ?', (group_id, user_id))
+        row = cursor.fetchone()
+        
+        if row:
+            new_count = row[0] + 1
+            cursor.execute('''
+                UPDATE users 
+                SET nickname = ?, interaction_count = ?, last_active_time = ? 
+                WHERE group_id = ? AND user_id = ?
+            ''', (nickname, new_count, timestamp, group_id, user_id))
+        else:
+            cursor.execute('''
+                INSERT INTO users (user_id, group_id, nickname, interaction_count, last_active_time)
+                VALUES (?, ?, ?, 1, ?)
+            ''', (user_id, group_id, nickname, timestamp))
+            
+        conn.commit()
+        conn.close()
+
+    def update_user_description(self, group_id: str, user_id: str, description: str):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('UPDATE users SET description = ? WHERE group_id = ? AND user_id = ?', (description, group_id, user_id))
+        conn.commit()
+        conn.close()
+
+    def get_recent_topics(self, group_id: str, limit: int = 5) -> List[Dict]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT id, summary, start_time, end_time 
+            FROM topics 
+            WHERE group_id = ? AND summary IS NOT NULL 
+            ORDER BY start_time DESC 
+            LIMIT ?
+        ''', (group_id, limit))
+        rows = cursor.fetchall()
+        conn.close()
+        
+        return [
+            {"id": r[0], "summary": r[1], "start_time": r[2], "end_time": r[3]} 
+            for r in rows
+        ]
+
+    def get_latest_active_topic(self, group_id: str) -> Optional[Dict]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        # Find the latest topic that hasn't been "closed" (end_time is NULL or 0)
+        # Or just the latest one, and we let logic decide if it's stale
+        cursor.execute('''
+            SELECT id, start_time, end_time, summary 
+            FROM topics 
+            WHERE group_id = ? 
+            ORDER BY start_time DESC 
+            LIMIT 1
+        ''', (group_id,))
+        row = cursor.fetchone()
+        
+        if not row:
+            conn.close()
+            return None
+            
+        topic_id, start_time, end_time, summary = row
+        
+        # Get messages for this topic
+        cursor.execute('''
+            SELECT user_id, nickname, content, timestamp 
+            FROM messages 
+            WHERE topic_id = ? 
+            ORDER BY timestamp ASC
+        ''', (topic_id,))
+        messages = [
+            {"user_id": r[0], "nickname": r[1], "content": r[2], "timestamp": r[3]}
+            for r in cursor.fetchall()
+        ]
+        conn.close()
+        
+        return {
+            "topic_id": topic_id,
+            "start_time": start_time,
+            "last_msg_time": messages[-1]["timestamp"] if messages else start_time,
+            "messages": messages,
+            "summary": summary
+        }
+        
 storage = Storage()
