@@ -163,7 +163,7 @@ class TopicManager:
         
         # Calculate time gaps
         time_since_last_group = 0
-        time_since_last_user = 0
+        time_since_last_user = 9999.0
         
         if len(messages) > 1:
             time_since_last_group = now - messages[-2]["timestamp"]
