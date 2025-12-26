@@ -56,6 +56,32 @@ class Storage:
         )
         ''')
         
+        # [新增] 决策日志表 - 用于 Dashboard 可视化监控
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS decision_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            group_id TEXT,
+            timestamp REAL,
+            judge_model TEXT,
+            should_intervene BOOLEAN,
+            trigger_level TEXT,
+            reason TEXT,
+            context_summary TEXT
+        )
+        ''')
+
+        # [新增] 记忆表 - 用于存储用户特定的事实 (Gemini Style)
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS memories (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT,
+            group_id TEXT,
+            content TEXT,
+            timestamp REAL,
+            UNIQUE(user_id, content)
+        )
+        ''')
+
         # Check if nickname column exists in messages (for migration)
         cursor.execute("PRAGMA table_info(messages)")
         columns = [info[1] for info in cursor.fetchall()]
@@ -168,6 +194,55 @@ class Storage:
         cursor.execute('UPDATE users SET description = ? WHERE group_id = ? AND user_id = ?', (description, group_id, user_id))
         conn.commit()
         conn.close()
+
+    def add_decision_log(self, group_id: str, judge_model: str, result: Dict, context_summary: Optional[str]):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute('''
+                INSERT INTO decision_logs (group_id, timestamp, judge_model, should_intervene, trigger_level, reason, context_summary)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                group_id, 
+                time.time(), 
+                judge_model,
+                result.get("should_intervene", False),
+                result.get("trigger_level", "none"),
+                result.get("reason", ""),
+                context_summary or ""
+            ))
+            conn.commit()
+        except Exception as e:
+            print(f"[Storage] Failed to log decision: {e}")
+        finally:
+            conn.close()
+
+    def add_memory(self, user_id: str, group_id: str, content: str):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute('''
+                INSERT OR IGNORE INTO memories (user_id, group_id, content, timestamp)
+                VALUES (?, ?, ?, ?)
+            ''', (user_id, group_id, content, time.time()))
+            conn.commit()
+        except Exception as e:
+            print(f"[Storage] Failed to add memory: {e}")
+        finally:
+            conn.close()
+
+    def get_memories(self, user_id: str, limit: int = 20) -> List[str]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT content FROM memories 
+            WHERE user_id = ? 
+            ORDER BY timestamp DESC 
+            LIMIT ?
+        ''', (user_id, limit))
+        rows = cursor.fetchall()
+        conn.close()
+        return [r[0] for r in rows]
 
     def get_recent_topics(self, group_id: str, limit: int = 5) -> List[Dict]:
         conn = self.get_connection()

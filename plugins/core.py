@@ -2,6 +2,7 @@ from alicebot import Plugin
 from alicebot.adapter.cqhttp.event import GroupMessageEvent
 import asyncio
 import random
+import re
 from services.topic import topic_manager
 from services.llm import llm_service
 from config import settings
@@ -20,7 +21,17 @@ class QJinEraPlugin(Plugin):
 
         user_id = str(event.user_id)
         group_id = str(event.group_id)
-        content = event.get_plain_text()
+        
+        # [修改] 预处理消息，防止图片被过滤为空字符串
+        raw_message = str(event.message)
+        # 将 CQ 码图片替换为文本标记，让 LLM 知道这里有图
+        content = re.sub(r'\[CQ:image,[^\]]+\]', ' [图片] ', raw_message)
+        # 移除其他 CQ 码（可选）并去两端空格
+        content = re.sub(r'\[CQ:[^\]]+\]', '', content).strip()
+
+        # 如果处理后为空（例如只发了表情），给个默认值防止报错
+        if not content:
+            content = "[表情/图片]"
         
         # Get nickname if available
         nickname = ""
@@ -64,9 +75,7 @@ class QJinEraPlugin(Plugin):
         task = asyncio.create_task(self.debounce_and_judge(group_id, event, debounce_time))
         self._debounce_tasks[group_id] = task
         
-        # 4. User Profile Update (Async, Low Priority)
-        if random.random() < 0.1:
-            asyncio.create_task(self.update_user_profile(group_id, user_id))
+        # Note: Memory update is now triggered by the Judge model inside debounce_and_judge
 
     async def debounce_and_judge(self, group_id: str, event, delay: float):
         try:
@@ -79,6 +88,27 @@ class QJinEraPlugin(Plugin):
 
             print(f"[CorePlugin] Debounce finished. Asking Judge Model...")
             judge_result = await llm_service.judge_interruption(context)
+            
+            # [新增] 核心修改：将思考过程写入数据库
+            try:
+                from services.storage import storage
+                storage.add_decision_log(
+                    group_id=group_id,
+                    judge_model=settings.get("llm", "judge_model", "unknown"),
+                    result=judge_result,
+                    context_summary=context.get("topic_summary", "")
+                )
+            except Exception as e:
+                print(f"[CorePlugin] Log Error: {e}")
+
+            # 1. Memory Extraction Trigger
+            # If the Judge thinks there's significant info, trigger the extractor
+            if judge_result.get("has_significant_info", False):
+                user_id = str(event.user_id) # Use the ID from the event that triggered this
+                print(f"[CorePlugin] Judge detected significant info. Triggering memory extraction for {user_id}...")
+                asyncio.create_task(self.update_user_profile(group_id, user_id))
+
+            # 2. Intervention Decision
             should_intervene = judge_result.get("should_intervene", False)
             print(f"[CorePlugin] Judge Result: {should_intervene}")
             
@@ -116,6 +146,8 @@ class QJinEraPlugin(Plugin):
     async def update_user_profile(self, group_id: str, user_id: str):
         try:
             from services.storage import storage
+            
+            # Check if user exists (to ensure basic record)
             user = storage.get_user(group_id, user_id)
             if not user:
                 return
@@ -126,16 +158,19 @@ class QJinEraPlugin(Plugin):
                 return
                 
             user_msgs = [m["content"] for m in topic["messages"] if m["user_id"] == user_id]
-            if len(user_msgs) < 3: # Not enough data
+            if len(user_msgs) < 2: # Reduce threshold to capture facts quickly
                 return
 
-            print(f"[CorePlugin] Updating profile for user {user_id}...")
-            current_desc = user.get("description", "")
-            new_desc = await llm_service.analyze_user(current_desc, user_msgs[-10:]) 
+            print(f"[CorePlugin] Extracting memories for user {user_id}...")
             
-            if new_desc and new_desc != current_desc:
-                storage.update_user_description(group_id, user_id, new_desc)
-                print(f"[CorePlugin] Updated profile for {user_id}: {new_desc}")
+            # Extract new facts
+            new_facts = await llm_service.extract_memories(user_msgs[-10:])
+            
+            if new_facts:
+                print(f"[CorePlugin] Found {len(new_facts)} new memories for {user_id}")
+                for fact in new_facts:
+                    storage.add_memory(user_id, group_id, fact)
+                    print(f"  + Memory: {fact}")
                 
         except Exception as e:
             print(f"[CorePlugin] Error updating user profile: {e}")

@@ -71,4 +71,14 @@ class LLMService:
         user_content = f"Current Profile: {current_profile}\n\nRecent Messages:\n" + "\n".join(recent_messages)
         return await self._call_llm(self.judge_model, system_prompt, user_content, json_mode=False)
 
+    async def extract_memories(self, recent_messages: List[str]) -> List[str]:
+        """
+        Extract distinct facts/memories from user messages.
+        """
+        system_prompt = settings.get("prompts", "memory_extractor_system")
+        user_content = "Recent User Messages:\n" + "\n".join(recent_messages)
+        
+        result = await self._call_llm(self.judge_model, system_prompt, user_content, json_mode=True)
+        return result.get("facts", [])
+
 llm_service = LLMService()

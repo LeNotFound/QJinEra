@@ -191,12 +191,19 @@ class TopicManager:
         if user_profile and user_profile.get("description"):
             user_desc = f"Current Speaker ({user_profile['nickname']}): {user_profile['description']}"
         
+        # [新增] Get User Memories (Gemini Style)
+        memories = storage.get_memories(user_id, limit=20)
+        memory_section = ""
+        if memories:
+            memory_section = "User Memories:\n" + "\n".join([f"- {m}" for m in memories])
+
         return {
             "persona": settings.get("prompts", "persona"),
             "recent_messages": recent_msgs,
             "topic_summary": topic.get("summary"),
             "past_topics": past_topics_summary,
             "user_profile": user_desc,
+            "user_memories": memory_section,
             "latest_message": content,
             "time_since_last_group_message": time_since_last_group,
             "time_since_last_user_message": time_since_last_user,
