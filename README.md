@@ -46,7 +46,7 @@
 确保已安装 Python 3.10+。
 
 ```bash
-git clone https://github.com/YourRepo/QJinEra.git
+git clone https://github.com/LeNotFound/QJinEra.git
 cd QJinEra
 ```
 
