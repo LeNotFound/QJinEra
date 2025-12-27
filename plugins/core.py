@@ -61,6 +61,9 @@ class QJinEraPlugin(Plugin):
                 print(f"[CorePlugin] Mentioned! Cancelled pending debounce for group {group_id}")
             
             print(f"[CorePlugin] Bot was mentioned. Intervening directly.")
+            # [新增] 直接 @ 时强制触发记忆提取
+            asyncio.create_task(self.update_user_profile(group_id, user_id))
+            
             await self.process_chat(context, event)
             return
 

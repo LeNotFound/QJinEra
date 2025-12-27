@@ -155,7 +155,10 @@ class TopicManager:
 
     def update_summary(self, group_id: str, summary: str):
         if group_id in self.active_topics:
-            self.active_topics[group_id]["summary"] = summary
+            topic = self.active_topics[group_id]
+            topic["summary"] = summary
+            # [新增] 立即持久化到数据库
+            storage.update_topic_summary(topic["topic_id"], summary)
 
     def _build_context(self, group_id: str, user_id: str, content: str, now: float) -> Dict:
         topic = self.active_topics.get(group_id)

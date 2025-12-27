@@ -123,10 +123,13 @@ class Storage:
         conn.close()
         return topic_id
 
-    def update_topic_summary(self, topic_id: int, summary: str, end_time: float):
+    def update_topic_summary(self, topic_id: int, summary: str, end_time: float = None):
         conn = self.get_connection()
         cursor = conn.cursor()
-        cursor.execute('UPDATE topics SET summary = ?, end_time = ? WHERE id = ?', (summary, end_time, topic_id))
+        if end_time:
+            cursor.execute('UPDATE topics SET summary = ?, end_time = ? WHERE id = ?', (summary, end_time, topic_id))
+        else:
+            cursor.execute('UPDATE topics SET summary = ? WHERE id = ?', (summary, topic_id))
         conn.commit()
         conn.close()
 
