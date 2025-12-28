@@ -6,6 +6,7 @@
 
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue) ![AliceBot](https://img.shields.io/badge/Framework-AliceBot-green) ![License](https://img.shields.io/badge/License-GPLv3-orange) ![LLM Support](https://img.shields.io/badge/LLM-OpenAI%20%7C%20Gemini-blueviolet)
 
+![](/docs/card.png)
 
 **柒槿年** (QJinEra) 旨在打破传统 Bot "一问一答" 的僵硬模式。她能**感知情绪**、**主动插话**、**分条回复**，并像老朋友一样**随着时间推移记住你的喜好与经历**。
 
