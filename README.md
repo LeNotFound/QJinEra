@@ -4,7 +4,7 @@
 >
 > 一个基于 AliceBot + NapCat 的拟人化 QQBot，拥有记忆、情感和灵魂。
 
-![Python](https://img.shields.io/badge/Python-3.10%2B-blue) ![AliceBot](https://img.shields.io/badge/Framework-AliceBot-green) ![License](https://img.shields.io/badge/License-GPLv3-orange) ![LLM Support](https://img.shields.io/badge/LLM-OpenAI%20%7C%20Gemini-blueviolet)
+![Python](https://img.shields.io/badge/Python-3.10%2B-blue) ![AliceBot](https://img.shields.io/badge/Framework-AliceBot-green) ![License](https://img.shields.io/badge/License-AGPLv3-orange) ![LLM Support](https://img.shields.io/badge/LLM-OpenAI%20%7C%20Gemini-blueviolet)
 
 ![](/docs/card.png)
 
@@ -121,4 +121,4 @@ QJinEra/
 
 ## 📄 License
 
-GPLv3
+AGPLv3
