@@ -36,9 +36,9 @@
 
 ---
 
-# 3. 🏗 **系统架构 (The Trinity Architecture)**
+# 3. 🏗 **系统架构 (The Trinity+ Architecture)**
 
-本项目采用 **三模型协同 (Trinity)** 架构，各司其职，模拟人类的认知过程：
+本项目采用 **四模型协同 (The Quartet)** 架构，在原有的三模型基础上引入了“赛博回响”机制，进一步深化了记忆处理：
 
 ```mermaid
 graph TD
@@ -51,15 +51,21 @@ graph TD
     Decision -->|"插嘴"| Writer(("写手模型 (Large LLM)"))
     Decision -->|"沉默"| End["结束"]
     
-    Extractor -->|"提取新事实"| DB["SQLite Memories"]
-    DB -->|"注入长期记忆"| Writer
+    Extractor -->|"提取新事实"| ActiveMem["Active Memories (Status='active')"]
+    ActiveMem -->|"注入短期记忆"| Writer
     
     Writer -->|"生成回复"| Output["分条发送/模拟延迟"]
+
+    EndTopic["话题归档 (Topic Archived)"] -->|"触发回响"| Consolidator(("侧写师/巩固者 (Large LLM)"))
+    Consolidator -->|"读取"| ActiveMem
+    Consolidator -->|"读取"| UserDesc["Users.Description (长期印象)"]
+    Consolidator -->|"融合/炼化"| NewDesc["更新长期印象"]
+    Consolidator -->|"归档"| ArchivedMem["Archived Memories (Status='archived')"]
 ```
 
 ## 3.1 🧠 模型分工
 1.  **判官模型 (The Judge)**
-    *   **职责**：潜意识层。阅读实时消息流，决定“是否插话”以及“是否有值得记住的信息”。
+    *   **职责**：潜意识层。阅读实时消息流，决定“是否插话”。
     *   **特点**：响应极快，成本低（推荐 Gemini Flash-Lite / GPT-4o-mini）。
     *   **能力**：识别情绪（吃瓜/求夸/负面吐槽）、锁定对话流、过滤无意义内容。
 
@@ -69,28 +75,40 @@ graph TD
     *   **能力**：结合短期上下文 + 长期记忆，生成符合人设的自然对话。
 
 3.  **记忆提取器 (The Extractor)**
-    *   **职责**：海马体。从对话中提取关于用户的**新事实 (New Facts)**。
+    *   **职责**：海马体（前端）。从对话中提取关于用户的**新事实 (New Facts)**。
     *   **特点**：精准，结构化输出。
-    *   **能力**：从“我买了菠萝披萨”中提取 `["用户喜欢菠萝披萨"]` 并存入数据库。
+    *   **产出**：将事实存入 `memories` 表，状态标记为 `active`。
+
+4.  **记忆巩固者 (The Consolidator) - Cyber Echo**
+    *   **职责**：大脑皮层（记忆固化）。在话题结束后的静默期，反刍刚才的对话。
+    *   **特点**：深刻，具有文学性（使用 Large LLM）。
+    *   **能力**：将零散的 `active` 事实融合进用户的 `description` 长期画像中，并将处理过的事实归档 (`archived`)，实现“越聊越懂你”的浪漫进化。
 
 ---
 
-# 4. 📚 **记忆系统 (Gemini Style)**
+# 4. 📚 **记忆系统 (Gemini Style V2)**
 
-本项目放弃了传统的“用户画像摘要”模式，转而采用**基于事实的增量记忆 (Fact-based Incremental Memory)**。
+本项目采用**分层记忆与回响机制 (Layered Memory & Cyber Echo)**。
 
 ## 4.1 存储结构 (`memories` 表)
-每条记忆都是一个独立的 Fact，包含：
-*   `user_id`: 归属用户
-*   `content`: 记忆内容（如 "2025-12-26 重构了数据库"）
+每条记忆包含：
+*   `content`: 记忆内容
 *   `timestamp`: 记录时间
+*   `status`: 状态流转
+    *   `active`: 新鲜的记忆，每次聊天都会作为 Context 喂给 Bot。
+    *   `short_term`: 琐碎的短期记忆（如“心情不好”），保留 24h 后丢弃，不进入长期画像。
+    *   `archived`: 已被炼化进长期画像的陈旧事实，不再直接参与 Prompt 构建，但永久保存。
 
-## 4.2 触发机制
-*   **显式触发**：当用户说“记住”、“我是...”、“我叫...”或直接 @Bot 时，强制触发提取。
-*   **隐式触发**：Judge 模型在阅读消息时，如果发现由语义隐含的重要信息（`has_significant_info: true`），会自动触发提取。
+## 4.2 赛博回响 (Cyber Echo)
+**“在你离开后的静默里，我在反刍我们的对话。”**
 
-## 4.3 记忆利用
-在 Writer 生成回复时，系统会检索该用户的相关记忆注入 Prompt。Bot 会不经意地提起这些往事（“你上次说的那个bug修好了吗？”），营造“被记住”的浪漫感。
+1.  **触发**：当一个话题结束（Topic Archived）且产生了 $\ge 3$ 条新事实时。
+2.  **过程**：
+    *   后台异步启动 `Consolidator`。
+    *   读取用户的旧画像 + 所有 `active` 的事实。
+    *   生成一段新的、更丰满的侧写 (Description)。
+    *   将已处理的事实标记为 `archived`。
+3.  **效果**：Bot 对你的印象会随着时间推移，从碎片化的“他喜欢吃苹果”、“他住北京”逐渐升华为“他是一个在北京独自生活的健康生活倡导者”。
 
 ---
 

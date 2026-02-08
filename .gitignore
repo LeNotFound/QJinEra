@@ -211,3 +211,4 @@ qjinera.db
 run_test.bat
 test_log.txt
 config.toml
+.gemini/

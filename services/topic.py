@@ -1,7 +1,9 @@
 import time
+import asyncio
 from typing import List, Dict, Optional
 from config import settings
 from services.storage import storage
+from services.memory_service import memory_service
 
 class TopicManager:
     def __init__(self):
@@ -151,6 +153,27 @@ class TopicManager:
         topic = self.active_topics.get(group_id)
         if topic:
             storage.update_topic_summary(topic["topic_id"], topic.get("summary"), topic["last_msg_time"])
+            
+            # [Cyber Echo] Trigger memory consolidation for participants
+            try:
+                # Extract unique users from this topic
+                participants = set(msg["user_id"] for msg in topic["messages"])
+                
+                # Get current event loop to schedule async tasks from this sync context
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    # If no running loop (rare in production), ignore or create new
+                    loop = None
+                
+                if loop:
+                    for user_id in participants:
+                        # Skip if it looks like a bot ID (simple heuristic or need config)
+                        # For now, just run for all. MemoryService handles empty/low facts anyway.
+                        loop.create_task(memory_service.consolidate_if_needed(user_id, group_id))
+            except Exception as e:
+                print(f"[TopicManager] Error triggering memory consolidation: {e}")
+
             del self.active_topics[group_id]
 
     def update_summary(self, group_id: str, summary: str):

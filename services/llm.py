@@ -1,5 +1,6 @@
 import openai
 import json
+import time
 from typing import Dict, Any, List, Optional
 from config import settings
 
@@ -80,5 +81,30 @@ class LLMService:
         
         result = await self._call_llm(self.judge_model, system_prompt, user_content, json_mode=True)
         return result.get("facts", [])
+
+    async def consolidate_memory(self, current_profile: str, active_facts: List[Dict]) -> Dict[str, Any]:
+        """
+        Consolidate active facts into the long-term user description.
+        active_facts: [{"id": 1, "content": "..."}]
+        """
+        system_prompt = settings.get("prompts", "memory_consolidator_system")
+        if not system_prompt:
+             # Fallback prompt if config not reloaded
+             system_prompt = "You are a memory consolidator. Return JSON {new_description, consolidated_ids, discarded_ids}."
+
+        # Convert timestamp to readable format or relative time
+        import datetime
+        def format_time(ts):
+            return datetime.datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M')
+
+        facts_text = "\n".join([
+            f"ID: {f['id']} | Time: {format_time(f['timestamp'])} | Content: {f['content']}" 
+            for f in active_facts
+        ])
+        
+        user_content = f"Current Description:\n{current_profile}\n\nNew Active Facts (Current Time: {format_time(time.time())}):\n{facts_text}"
+        
+        print(f"[LLM] Consolidating memory for {len(active_facts)} facts...")
+        return await self._call_llm(self.chat_model, system_prompt, user_content, json_mode=True)
 
 llm_service = LLMService()

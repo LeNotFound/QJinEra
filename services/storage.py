@@ -78,6 +78,7 @@ class Storage:
             group_id TEXT,
             content TEXT,
             timestamp REAL,
+            status TEXT DEFAULT 'active',
             UNIQUE(user_id, content)
         )
         ''')
@@ -224,9 +225,10 @@ class Storage:
         conn = self.get_connection()
         cursor = conn.cursor()
         try:
+            # Default status is 'active'
             cursor.execute('''
-                INSERT OR IGNORE INTO memories (user_id, group_id, content, timestamp)
-                VALUES (?, ?, ?, ?)
+                INSERT OR IGNORE INTO memories (user_id, group_id, content, timestamp, status)
+                VALUES (?, ?, ?, ?, 'active')
             ''', (user_id, group_id, content, time.time()))
             conn.commit()
         except Exception as e:
@@ -235,17 +237,78 @@ class Storage:
             conn.close()
 
     def get_memories(self, user_id: str, limit: int = 20) -> List[str]:
+        """
+        Get memories for Chat Context (Active + Short Term).
+        """
         conn = self.get_connection()
         cursor = conn.cursor()
         cursor.execute('''
             SELECT content FROM memories 
-            WHERE user_id = ? 
+            WHERE user_id = ? AND status IN ('active', 'short_term')
             ORDER BY timestamp DESC 
             LIMIT ?
         ''', (user_id, limit))
         rows = cursor.fetchall()
         conn.close()
         return [r[0] for r in rows]
+
+    def get_active_memories_details(self, user_id: str) -> List[Dict]:
+        """
+        Get all active memories with IDs for consolidation.
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT id, content, timestamp FROM memories 
+            WHERE user_id = ? AND status = 'active'
+            ORDER BY timestamp ASC
+        ''', (user_id,))
+        rows = cursor.fetchall()
+        conn.close()
+        return [{"id": r[0], "content": r[1], "timestamp": r[2]} for r in rows]
+
+    def prune_short_term_memories(self, retention_hours: int = 24):
+        """
+        Auto-archive expired short-term memories.
+        """
+        expiry_time = time.time() - (retention_hours * 3600)
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute('''
+                UPDATE memories 
+                SET status = 'archived' 
+                WHERE status = 'short_term' AND timestamp < ?
+            ''', (expiry_time,))
+            if cursor.rowcount > 0:
+                print(f"[Storage] Pruned {cursor.rowcount} expired short-term memories.")
+            conn.commit()
+        except Exception as e:
+            print(f"[Storage] Failed to prune memories: {e}")
+        finally:
+            conn.close()
+
+    def update_memories_status(self, memory_ids: List[int], new_status: str):
+        """
+        Batch update status.
+        """
+        if not memory_ids:
+            return
+            
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            placeholders = ','.join(['?'] * len(memory_ids))
+            cursor.execute(f'''
+                UPDATE memories 
+                SET status = ? 
+                WHERE id IN ({placeholders})
+            ''', (new_status, *memory_ids))
+            conn.commit()
+        except Exception as e:
+            print(f"[Storage] Failed to update memory status: {e}")
+        finally:
+            conn.close()
 
     def get_recent_topics(self, group_id: str, limit: int = 5) -> List[Dict]:
         conn = self.get_connection()
