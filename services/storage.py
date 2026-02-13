@@ -380,5 +380,36 @@ class Storage:
         rows = cursor.fetchall()
         conn.close()
         return [r[0] for r in rows if r[0]]
+
+    def close_all_stale_topics(self, group_id: str, threshold_timestamp: float) -> int:
+        """
+        Close all topics for a group where the last message (or start time if no msgs) 
+        is older than threshold_timestamp.
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        # Update topics where end_time is NULL/0 and last activity is older than threshold
+        # We set end_time to the last message timestamp (or start_time)
+        cursor.execute('''
+            UPDATE topics 
+            SET end_time = (
+                SELECT COALESCE(MAX(timestamp), topics.start_time) 
+                FROM messages 
+                WHERE messages.topic_id = topics.id
+            )
+            WHERE group_id = ? 
+              AND (end_time IS NULL OR end_time = 0)
+              AND (
+                  SELECT COALESCE(MAX(timestamp), topics.start_time) 
+                  FROM messages 
+                  WHERE messages.topic_id = topics.id
+              ) < ?
+        ''', (group_id, threshold_timestamp))
+        
+        count = cursor.rowcount
+        conn.commit()
+        conn.close()
+        return count
         
 storage = Storage()

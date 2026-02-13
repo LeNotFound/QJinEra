@@ -36,6 +36,7 @@ class TopicManager:
         """
         Scan all known groups in DB.
         - Restore active topics if fresh.
+        - Close stale topics if they are still open in DB (fix NULL end_time).
         - Populate group_last_activity for Active Speaking feature.
         """
         known_groups = storage.get_all_known_groups()
@@ -45,26 +46,31 @@ class TopicManager:
             # Check whitelist
             if not self.is_group_allowed(gid):
                 continue
+            
+            # 1. Close ALL stale topics for this group
+            # Stale = last_msg_time < now - topic_gap
+            threshold = now - self.topic_gap
+            closed_count = storage.close_all_stale_topics(gid, threshold)
+            if closed_count > 0:
+                print(f"[TopicManager] Closed {closed_count} stale topics for group {gid} (Boot cleanup)")
 
+            # 2. Try to restore active topic (fresh one)
             topic = storage.get_latest_active_topic(gid)
             if topic:
                 last_time = topic["last_msg_time"]
-                self.group_last_activity[gid] = last_time
                 
-                # If fresh, restore as active topic
                 if now - last_time <= self.topic_gap:
+                    # It's fresh, so we keep it active
                     self.active_topics[gid] = topic
+                    self.group_last_activity[gid] = last_time
                     print(f"[TopicManager] Restored active topic for group {gid}")
                 else:
-                    # If stale, we don't restore to active_topics, but we ensure group_last_activity is set
-                    # so the scheduler knows when the last message was.
-                    pass
+                    # It's stale (and should have been closed by step 1 above), so we just record last activity
+                    self.group_last_activity[gid] = last_time
+
             else:
-                # No topic found, maybe new group or old data cleaned
-                if gid not in self.group_last_activity:
-                    # Default to now - proactive_interval so it doesn't trigger immediately but eventually
-                    # Actually better to leave it empty until first message or explicit init
-                    pass
+                # No topic found at all
+                pass
 
     def check_expired_topics(self):
         """
