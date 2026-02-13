@@ -21,20 +21,78 @@ class TopicManager:
         # Restore active topics from DB
         self._restore_active_topics()
 
+    def is_group_allowed(self, group_id: str) -> bool:
+        allowed = settings.get("bot", "allowed_groups", [])
+        if not allowed:
+            # If list is empty, default to allow all.
+            # (User requested "whitelist", but usually empty means unrestricted in simple bots. 
+            # If strict whitelist is needed, user should just populate the list.)
+            return True
+        
+        # Ensure comparison is type-safe (config might be int, group_id is str)
+        return int(group_id) in [int(g) for g in allowed]
+
     def _restore_active_topics(self):
-        # This is a bit tricky since we don't know all group_ids.
-        # But we can just load lazily or query distinct group_ids from topics.
-        # For now, let's just rely on lazy loading or simple check when handle_message is called?
-        # Actually, handle_message checks self.active_topics. If empty, it starts new.
-        # We should try to load from DB if memory is empty.
-        pass
+        """
+        Scan all known groups in DB.
+        - Restore active topics if fresh.
+        - Populate group_last_activity for Active Speaking feature.
+        """
+        known_groups = storage.get_all_known_groups()
+        now = time.time()
+        
+        for gid in known_groups:
+            # Check whitelist
+            if not self.is_group_allowed(gid):
+                continue
+
+            topic = storage.get_latest_active_topic(gid)
+            if topic:
+                last_time = topic["last_msg_time"]
+                self.group_last_activity[gid] = last_time
+                
+                # If fresh, restore as active topic
+                if now - last_time <= self.topic_gap:
+                    self.active_topics[gid] = topic
+                    print(f"[TopicManager] Restored active topic for group {gid}")
+                else:
+                    # If stale, we don't restore to active_topics, but we ensure group_last_activity is set
+                    # so the scheduler knows when the last message was.
+                    pass
+            else:
+                # No topic found, maybe new group or old data cleaned
+                if gid not in self.group_last_activity:
+                    # Default to now - proactive_interval so it doesn't trigger immediately but eventually
+                    # Actually better to leave it empty until first message or explicit init
+                    pass
+
+    def check_expired_topics(self):
+        """
+        Called periodically by scheduler to archive stale topics.
+        Triggers Cyber Echo.
+        """
+        now = time.time()
+        expired_groups = []
+        
+        for group_id, topic in self.active_topics.items():
+            if now - topic["last_msg_time"] > self.topic_gap:
+                expired_groups.append(group_id)
+        
+        for gid in expired_groups:
+            print(f"[TopicManager] Auto-archiving expired topic for group {gid}")
+            self._archive_topic(gid)
 
     def get_current_topic(self, group_id: str) -> Dict:
+        if not self.is_group_allowed(group_id):
+            return None
         if group_id not in self.active_topics:
             self._try_restore_topic(group_id)
         return self.active_topics.get(group_id)
 
     def _try_restore_topic(self, group_id: str):
+        if not self.is_group_allowed(group_id):
+            return
+
         # Try to load the latest topic from DB
         topic = storage.get_latest_active_topic(group_id)
         if topic:
@@ -46,6 +104,9 @@ class TopicManager:
                 print(f"[TopicManager] Restored active topic for group {group_id}")
 
     def get_latest_context(self, group_id: str) -> Optional[Dict]:
+        if not self.is_group_allowed(group_id):
+            return None
+
         if group_id not in self.active_topics:
             self._try_restore_topic(group_id)
             
@@ -61,11 +122,14 @@ class TopicManager:
             last_msg["timestamp"]
         )
 
-    def handle_message(self, group_id: str, user_id: str, content: str, nickname: str = "") -> Dict:
+    def handle_message(self, group_id: str, user_id: str, content: str, nickname: str = "") -> Optional[Dict]:
         """
         Process a new message and determine if it belongs to the current topic or starts a new one.
         Returns the context for the LLM.
         """
+        if not self.is_group_allowed(group_id):
+            return None
+
         now = time.time()
         
         # Update user info

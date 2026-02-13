@@ -22,6 +22,9 @@ class QJinEraPlugin(Plugin):
         user_id = str(event.user_id)
         group_id = str(event.group_id)
         
+        if not topic_manager.is_group_allowed(group_id):
+            return
+
         # [修改] 预处理消息，防止图片被过滤为空字符串
         raw_message = str(event.message)
         # 将 CQ 码图片替换为文本标记，让 LLM 知道这里有图

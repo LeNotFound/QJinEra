@@ -368,5 +368,17 @@ class Storage:
             "messages": messages,
             "summary": summary
         }
+
+    def get_all_known_groups(self) -> List[str]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT DISTINCT group_id FROM topics
+            UNION
+            SELECT DISTINCT group_id FROM users
+        ''')
+        rows = cursor.fetchall()
+        conn.close()
+        return [r[0] for r in rows if r[0]]
         
 storage = Storage()

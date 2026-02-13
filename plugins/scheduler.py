@@ -34,6 +34,9 @@ class SchedulerPlugin(Plugin):
                     now = time.time()
                     for g in groups:
                         gid = str(g["group_id"])
+                        if not topic_manager.is_group_allowed(gid):
+                            continue
+
                         if gid not in topic_manager.group_last_activity:
                             # Initialize with current time to avoid immediate trigger upon restart
                             topic_manager.group_last_activity[gid] = now
@@ -51,6 +54,12 @@ class SchedulerPlugin(Plugin):
         while True:
             await asyncio.sleep(interval)
             
+            # [Cyber Echo] Check for expired topics and archive them
+            try:
+                topic_manager.check_expired_topics()
+            except Exception as e:
+                print(f"[Scheduler] Error checking expired topics: {e}")
+            
             threshold_minutes = settings.get("topic", "proactive_chat_interval_minutes", 15)
             inactivity_threshold = threshold_minutes * 60
             
@@ -59,6 +68,9 @@ class SchedulerPlugin(Plugin):
             
             # Iterate over a copy to avoid runtime modification issues
             for group_id, last_time in list(topic_manager.group_last_activity.items()):
+                if not topic_manager.is_group_allowed(group_id):
+                    continue
+                    
                 if now - last_time > inactivity_threshold:
                     try:
                         print(f"[Scheduler] Group {group_id} is inactive (> {threshold_minutes}m). Triggering proactive message.")

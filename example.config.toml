@@ -8,6 +8,9 @@ admin_qq = 1234567890  # Replace with admin QQ
 plugins = ["plugins.core", "plugins.scheduler"]
 plugin_dirs = []
 adapters = ["alicebot.adapter.cqhttp"]
+# Whitelist for groups. If empty, all groups are allowed (or disallowed depending on logic).
+# Recommended to keep it strict.
+allowed_groups = [] # Example: [123456789]
 
 [bot.log]
 # 这里是 AliceBot 自身日志相关的配置
