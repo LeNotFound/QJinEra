@@ -42,6 +42,11 @@ chat_model = "openai/gpt-4o"
 database_file = "qjinera.db"
 data_dir = "data"
 
+[log]
+# 日志配置
+level = "INFO"
+log_dir = "logs"
+
 [topic]
 # Topic detection thresholds
 topic_gap_minutes = 10

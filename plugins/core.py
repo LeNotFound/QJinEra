@@ -1,186 +1,170 @@
-from alicebot import Plugin
-from alicebot.adapter.cqhttp.event import GroupMessageEvent
+"""
+核心插件 — 处理群消息事件。
+
+职责：消息预处理 → 话题更新 → 防抖 → Judge 判定 → Writer 回复 → 记忆提取。
+"""
+
+from __future__ import annotations
+
 import asyncio
 import random
 import re
+
+from alicebot import Plugin
+from alicebot.adapter.cqhttp.event import GroupMessageEvent
+
+from config import config
+from logger import get_logger
+from services import llm
+from services.storage import decisions, memories as mem_store
 from services.topic import topic_manager
-from services.llm import llm_service
-from config import settings
+
+logger = get_logger("CorePlugin")
+
+_debounce_seconds: float = config.topic.debounce_seconds
+_judge_model_name: str = config.llm.judge_model
+
 
 class QJinEraPlugin(Plugin):
-    # Class-level dictionary to store debounce tasks
-    # Key: group_id, Value: asyncio.Task
+    # 类级防抖任务表: {group_id: asyncio.Task}
     _debounce_tasks: dict[str, asyncio.Task] = {}
 
     async def handle(self) -> None:
-        event = self.event
-        if not isinstance(event, GroupMessageEvent):
-            return
-
-        print(f"[CorePlugin] Handling event: {event.message_id} from user {event.user_id}")
+        event: GroupMessageEvent = self.event
 
         user_id = str(event.user_id)
         group_id = str(event.group_id)
-        
+
         if not topic_manager.is_group_allowed(group_id):
             return
 
-        # [修改] 预处理消息，防止图片被过滤为空字符串
-        raw_message = str(event.message)
-        # 将 CQ 码图片替换为文本标记，让 LLM 知道这里有图
-        content = re.sub(r'\[CQ:image,[^\]]+\]', ' [图片] ', raw_message)
-        # 移除其他 CQ 码（可选）并去两端空格
-        content = re.sub(r'\[CQ:[^\]]+\]', '', content).strip()
+        content = _preprocess_message(str(event.message))
+        nickname = getattr(event.sender, "nickname", "") if hasattr(event, "sender") else ""
 
-        # 如果处理后为空（例如只发了表情），给个默认值防止报错
-        if not content:
-            content = "[表情/图片]"
-        
-        # Get nickname if available
-        nickname = ""
-        if hasattr(event, "sender") and hasattr(event.sender, "nickname"):
-            nickname = event.sender.nickname
+        logger.debug("收到消息 [群%s 用户%s]: %s", group_id, user_id, content[:50])
 
-        # 1. Topic Management & Context Building (Always update immediately)
+        # 1. 话题管理 & 上下文
         context = topic_manager.handle_message(group_id, user_id, content, nickname)
-        
-        # Check if mentioned
-        # 1. Check event.to_me (AliceBot standard)
-        # 2. Check if message contains [CQ:at,qq=self_id]
-        is_mentioned = getattr(event, "to_me", False)
-        
-        if not is_mentioned:
-            # Fallback: Check raw message for CQ code
-            self_id = getattr(event, "self_id", None)
-            if self_id:
-                if f"[CQ:at,qq={self_id}]" in str(event.message):
-                     is_mentioned = True
-        
-        if is_mentioned:
+
+        # 2. @ 检测
+        if _is_mentioned(event):
+            # 被 @ 时取消该群的防抖，避免双重回复
+            self._cancel_debounce(group_id)
             context["is_at_mentioned"] = True
-            # If mentioned, cancel any pending debounce task for this group to avoid double reply
-            if group_id in self._debounce_tasks:
-                self._debounce_tasks[group_id].cancel()
-                print(f"[CorePlugin] Mentioned! Cancelled pending debounce for group {group_id}")
-            
-            print(f"[CorePlugin] Bot was mentioned. Intervening directly.")
-            # [新增] 直接 @ 时强制触发记忆提取
-            asyncio.create_task(self.update_user_profile(group_id, user_id))
-            
-            await self.process_chat(context, event)
+            logger.info("被 @ 提及，直接回复 [群%s]", group_id)
+
+            asyncio.create_task(self._extract_user_memories(group_id, user_id))
+            await self._respond(context, event)
             return
 
-        # 2. Debounce for Judge
-        # Cancel existing task for this group
-        if group_id in self._debounce_tasks:
-            self._debounce_tasks[group_id].cancel()
-            
-        # Schedule new task
-        # Use the current event for replying (it's the latest one)
-        debounce_time = settings.get("topic", "debounce_seconds", 3.0)
-        task = asyncio.create_task(self.debounce_and_judge(group_id, event, debounce_time))
+        # 3. 防抖 → Judge
+        self._cancel_debounce(group_id)
+        task = asyncio.create_task(self._debounce_then_judge(group_id, event))
         self._debounce_tasks[group_id] = task
-        
-        # Note: Memory update is now triggered by the Judge model inside debounce_and_judge
-
-    async def debounce_and_judge(self, group_id: str, event, delay: float):
-        try:
-            await asyncio.sleep(delay)
-            
-            # Get fresh context (re-fetch because new messages might have arrived)
-            context = topic_manager.get_latest_context(group_id)
-            if not context:
-                return
-
-            print(f"[CorePlugin] Debounce finished. Asking Judge Model...")
-            judge_result = await llm_service.judge_interruption(context)
-            
-            # [新增] 核心修改：将思考过程写入数据库
-            try:
-                from services.storage import storage
-                storage.add_decision_log(
-                    group_id=group_id,
-                    judge_model=settings.get("llm", "judge_model", "unknown"),
-                    result=judge_result,
-                    context_summary=context.get("topic_summary", "")
-                )
-            except Exception as e:
-                print(f"[CorePlugin] Log Error: {e}")
-
-            # 1. Memory Extraction Trigger
-            # If the Judge thinks there's significant info, trigger the extractor
-            if judge_result.get("has_significant_info", False):
-                user_id = str(event.user_id) # Use the ID from the event that triggered this
-                print(f"[CorePlugin] Judge detected significant info. Triggering memory extraction for {user_id}...")
-                asyncio.create_task(self.update_user_profile(group_id, user_id))
-
-            # 2. Intervention Decision
-            should_intervene = judge_result.get("should_intervene", False)
-            print(f"[CorePlugin] Judge Result: {should_intervene}")
-            
-            if should_intervene:
-                await self.process_chat(context, event)
-                
-        except asyncio.CancelledError:
-            # This is expected when a new message arrives before the timer expires
-            pass
-        except Exception as e:
-            print(f"[CorePlugin] Error in debounce task: {e}")
-
-    async def process_chat(self, context: dict, event):
-        print(f"[CorePlugin] Generating Chat Response...")
-        # 3. Generate Chat Response
-        context["should_return_summary"] = True 
-        
-        chat_result = await llm_service.generate_chat(context)
-        messages = chat_result.get("messages", [])
-        summary = chat_result.get("summary")
-        
-        if summary:
-            topic_manager.update_summary(str(event.group_id), summary)
-            
-        for msg in messages:
-            # Simulate typing delay
-            delay = random.uniform(0.3, 1.2) + (len(msg) * 0.05)
-            await asyncio.sleep(delay)
-            await event.reply(msg)
-            
-            # Record bot's own message
-            bot_id = str(getattr(event, "self_id", "bot"))
-            topic_manager.add_bot_message(str(event.group_id), msg, bot_id, "柒槿年")
-
-    async def update_user_profile(self, group_id: str, user_id: str):
-        try:
-            from services.storage import storage
-            
-            # Check if user exists (to ensure basic record)
-            user = storage.get_user(group_id, user_id)
-            if not user:
-                return
-
-            # Get recent messages from this user in this group
-            topic = topic_manager.get_current_topic(group_id)
-            if not topic:
-                return
-                
-            user_msgs = [m["content"] for m in topic["messages"] if m["user_id"] == user_id]
-            if len(user_msgs) < 2: # Reduce threshold to capture facts quickly
-                return
-
-            print(f"[CorePlugin] Extracting memories for user {user_id}...")
-            
-            # Extract new facts
-            new_facts = await llm_service.extract_memories(user_msgs[-10:])
-            
-            if new_facts:
-                print(f"[CorePlugin] Found {len(new_facts)} new memories for {user_id}")
-                for fact in new_facts:
-                    storage.add_memory(user_id, group_id, fact)
-                    print(f"  + Memory: {fact}")
-                
-        except Exception as e:
-            print(f"[CorePlugin] Error updating user profile: {e}")
-
 
     async def rule(self) -> bool:
         return isinstance(self.event, GroupMessageEvent)
+
+    # ------------------------------------------------------------------
+    #  内部流程
+    # ------------------------------------------------------------------
+
+    async def _debounce_then_judge(self, group_id: str, event: GroupMessageEvent) -> None:
+        """防抖等待后，调用 Judge 模型判断是否插话。"""
+        try:
+            await asyncio.sleep(_debounce_seconds)
+        except asyncio.CancelledError:
+            return                              # 新消息到达，防抖重置
+
+        context = topic_manager.get_latest_context(group_id)
+        if not context:
+            return
+
+        logger.debug("防抖结束，咨询 Judge [群%s]", group_id)
+        result = await llm.judge_interruption(context)
+
+        # 记录决策日志
+        decisions.add(
+            group_id, _judge_model_name, result,
+            context.get("topic_summary", ""),
+        )
+
+        # 记忆提取信号
+        if result.get("has_significant_info"):
+            user_id = str(event.user_id)
+            logger.debug("Judge 发现重要信息，提取记忆 [用户%s]", user_id)
+            asyncio.create_task(self._extract_user_memories(group_id, user_id))
+
+        # 插话判定
+        if result.get("should_intervene"):
+            logger.info("Judge 判定：插话 [群%s] 原因: %s", group_id, result.get("reason", ""))
+            await self._respond(context, event)
+        else:
+            logger.debug("Judge 判定：沉默 [群%s]", group_id)
+
+    async def _respond(self, context: dict, event: GroupMessageEvent) -> None:
+        """调用 Writer 模型生成回复并发送。"""
+        context["should_return_summary"] = True
+        chat_result = await llm.generate_chat(context)
+
+        messages = chat_result.get("messages", [])
+        summary = chat_result.get("summary")
+
+        if summary:
+            topic_manager.update_summary(str(event.group_id), summary)
+
+        bot_id = str(getattr(event, "self_id", "bot"))
+
+        for msg in messages:
+            delay = random.uniform(0.3, 1.2) + len(msg) * 0.05
+            await asyncio.sleep(delay)
+            await event.reply(msg)
+            topic_manager.add_bot_message(str(event.group_id), msg, bot_id, "柒槿年")
+
+    async def _extract_user_memories(self, group_id: str, user_id: str) -> None:
+        """从当前话题中提取用户的新事实。"""
+        topic = topic_manager.get_current_topic(group_id)
+        if not topic:
+            return
+
+        user_msgs = [m["content"] for m in topic["messages"] if m["user_id"] == user_id]
+        if len(user_msgs) < 2:
+            return
+
+        logger.debug("提取用户 %s 的记忆...", user_id)
+        new_facts = await llm.extract_memories(user_msgs[-10:])
+
+        for fact in new_facts:
+            mem_store.add(user_id, group_id, fact)
+            logger.info("+ 记忆: %s [用户%s]", fact, user_id)
+
+    # ------------------------------------------------------------------
+    #  工具方法
+    # ------------------------------------------------------------------
+
+    def _cancel_debounce(self, group_id: str) -> None:
+        """取消指定群的防抖任务。"""
+        task = self._debounce_tasks.pop(group_id, None)
+        if task and not task.done():
+            task.cancel()
+
+
+# ---------------------------------------------------------------------------
+#  模块级工具函数
+# ---------------------------------------------------------------------------
+
+def _preprocess_message(raw: str) -> str:
+    """预处理 CQ 码消息，将图片替换为文本标记。"""
+    text = re.sub(r'\[CQ:image,[^\]]+\]', ' [图片] ', raw)
+    text = re.sub(r'\[CQ:[^\]]+\]', '', text).strip()
+    return text or "[表情/图片]"
+
+
+def _is_mentioned(event: GroupMessageEvent) -> bool:
+    """检查 Bot 是否被 @。"""
+    if getattr(event, "to_me", False):
+        return True
+    self_id = getattr(event, "self_id", None)
+    if self_id and f"[CQ:at,qq={self_id}]" in str(event.message):
+        return True
+    return False
