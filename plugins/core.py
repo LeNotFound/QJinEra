@@ -89,6 +89,14 @@ class QJinEraPlugin(Plugin):
             context.get("topic_summary", ""),
         )
 
+        # 话题转变感知
+        if result.get("topic_shifted"):
+            logger.info("Judge 感知话题转变 [群%s]，归档旧话题并创建新话题", group_id)
+            topic_manager.switch_topic(group_id)
+            context = topic_manager.get_latest_context(group_id)
+            if not context:
+                return
+
         # 记忆提取信号
         if result.get("has_significant_info"):
             user_id = str(event.user_id)

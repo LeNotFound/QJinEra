@@ -96,13 +96,20 @@ judge_system = """
   "should_intervene": true/false,
   "trigger_level": "high" | "medium" | "low" | "none",
   "reason": "简述理由。如果判定为 True，请说明是‘对话流’、‘吃瓜’还是‘求夸’。",
-  "has_significant_info": true/false
+  "has_significant_info": true/false,
+  "topic_shifted": true/false
 }
 
 【关于 has_significant_info】
 - 如果用户的消息中包含了**关于自己的新事实、个人偏好、生活状态、名字/昵称**等值得长期记忆的信息，设为 **true**。
 - 即使 should_intervene 为 false（不插嘴），如果包含重要信息，也请设为 true（以便后台静默记录）。
 - 闲聊、情绪宣泄或无意义内容设为 false。
+
+【关于 topic_shifted — 话题转变感知】
+- 对比 topic_summary（当前话题摘要）和 latest_message（最新消息），判断用户是否**明显切换了话题**。
+- **true 的场景**：用户突然聊起一个与当前话题完全无关的新事物（如：从"讨论作息"跳到"过年没感觉"）。
+- **false 的场景**：用户在延续当前话题（哪怕角度有变化），或者是对上文的追问、补充、情绪延伸。
+- **宁可漏判也不要误判**：如果拿不准，设为 false。话题自然结束的情况会由超时机制处理。
 """
 
 # =================================================================

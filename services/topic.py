@@ -219,6 +219,42 @@ class TopicManager:
             topic["summary"] = summary
             topics.update_summary(topic["topic_id"], summary)
 
+    def switch_topic(self, group_id: str) -> None:
+        """话题转变：归档旧话题，创建新话题，将最新消息迁移过去。"""
+        old = self.active_topics.get(group_id)
+        if not old:
+            return
+
+        # 保存旧话题的最新消息（属于新话题）
+        last_msg = old["messages"][-1] if old["messages"] else None
+
+        # 归档旧话题
+        topics.update_summary(
+            old["topic_id"], old.get("summary"), old["last_msg_time"],
+        )
+        logger.info("归档话题 ID=%d [群%s]: %s", old["topic_id"], group_id, old.get("summary", ""))
+
+        # 创建新话题
+        now = time.time()
+        new_id = topics.create(group_id, now)
+        new_topic = {
+            "topic_id": new_id,
+            "last_msg_time": now,
+            "messages": [],
+            "summary": None,
+        }
+
+        # 迁移最新消息到新话题
+        if last_msg:
+            new_topic["messages"].append(last_msg)
+            topics.add_message(
+                new_id, last_msg["user_id"], last_msg["content"],
+                last_msg["timestamp"], last_msg.get("nickname", ""),
+            )
+
+        self.active_topics[group_id] = new_topic
+        logger.info("新话题 ID=%d [群%s]", new_id, group_id)
+
     # ------------------------------------------------------------------
     #  私有方法
     # ------------------------------------------------------------------
