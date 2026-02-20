@@ -24,6 +24,12 @@ async def main() -> None:
     from alicebot import Bot
 
     bot = Bot()
+
+    @bot.bot_run_hook
+    async def _(b: Bot):
+        from services.scheduler import start_scheduler_loop
+        asyncio.create_task(start_scheduler_loop(b))
+
     try:
         await bot.run_async()
     finally:

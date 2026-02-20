@@ -58,7 +58,6 @@ class TopicConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     topic_gap_minutes: int = 10
-    continue_gap_seconds: int = 20
     debounce_seconds: float = 3.0
     proactive_chat_interval_minutes: int = 3
 
