@@ -49,7 +49,7 @@ async def _call(
     json_mode: bool = True,
 ) -> dict[str, Any]:
     """统一的 LLM 调用入口。"""
-    logger.debug("请求 %s ...", model)
+    logger.debug("请求 %s ... system_prompt 长度: %d, user_content 长度: %d\nuser_content预览: %s", model, len(system_prompt), len(user_content), user_content[:200])
     try:
         resp = await _client.chat.completions.create(
             model=model,
@@ -78,9 +78,11 @@ def _format_ts(ts: float) -> str:
 
 async def judge_interruption(context: dict[str, Any]) -> dict[str, Any]:
     """调用 Judge 模型判断是否插话。"""
+    bot_id = context.get("bot_id", "")
+    system_prompt = config.prompts.judge_system.replace("{bot_id}", bot_id)
     return await _call(
         _judge_model,
-        _prompts.judge_system,
+        system_prompt,
         json.dumps(context, ensure_ascii=False),
     )
 
@@ -103,12 +105,16 @@ async def generate_proactive_topic() -> dict[str, Any]:
     )
 
 
-async def extract_memories(recent_messages: list[str]) -> list[str]:
-    """从用户消息中提取事实/记忆。"""
+async def extract_memories(recent_messages: list[str], active_memories: list[str] = None) -> list[str]:
+    """从用户消息中提取差异或新增的事实/记忆。"""
+    user_content = "Recent User Messages:\n" + "\n".join(recent_messages)
+    if active_memories:
+        user_content += "\n\nKnown Active Memories:\n" + "\n".join(f"- {m}" for m in active_memories)
+
     result = await _call(
         _judge_model,
         _prompts.memory_extractor_system,
-        "Recent User Messages:\n" + "\n".join(recent_messages),
+        user_content,
     )
     return result.get("facts", [])
 

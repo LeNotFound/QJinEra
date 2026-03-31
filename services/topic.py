@@ -119,7 +119,7 @@ class TopicManager:
     # ------------------------------------------------------------------
 
     def handle_message(
-        self, group_id: str, user_id: str, content: str, nickname: str = "",
+        self, group_id: str, user_id: str, content: str, nickname: str = "", bot_id: str = "",
     ) -> dict[str, Any] | None:
         """处理新消息：更新话题、构建上下文。"""
         if not self.is_group_allowed(group_id):
@@ -157,7 +157,7 @@ class TopicManager:
         topics.add_message(current["topic_id"], user_id, content, now, nickname)
         self.group_last_activity[group_id] = now
 
-        return self._build_context(group_id, user_id, content, now)
+        return self._build_context(group_id, user_id, content, now, bot_id)
 
     def add_bot_message(
         self, group_id: str, content: str, bot_id: str, nickname: str = "QJinEra",
@@ -192,7 +192,7 @@ class TopicManager:
     #  上下文 & 摘要
     # ------------------------------------------------------------------
 
-    def get_latest_context(self, group_id: str) -> dict[str, Any] | None:
+    def get_latest_context(self, group_id: str, bot_id: str = "") -> dict[str, Any] | None:
         """获取群组的最新上下文（debounce 后重新取）。"""
         if not self.is_group_allowed(group_id):
             return None
@@ -204,7 +204,7 @@ class TopicManager:
 
         last_msg = topic["messages"][-1]
         return self._build_context(
-            group_id, last_msg["user_id"], last_msg["content"], last_msg["timestamp"],
+            group_id, last_msg["user_id"], last_msg["content"], last_msg["timestamp"], bot_id
         )
 
     def get_current_topic(self, group_id: str) -> dict | None:
@@ -278,12 +278,14 @@ class TopicManager:
             del self.active_topics[group_id]
 
     def _build_context(
-        self, group_id: str, user_id: str, content: str, now: float,
+        self, group_id: str, user_id: str, content: str, now: float, bot_id: str = "",
     ) -> dict[str, Any]:
         """构建传递给 LLM 的上下文字典。"""
         topic = self.active_topics[group_id]
         msgs = topic["messages"]
 
+        # 尝试从某处获取 bot 的信息，虽然没有直接传入 self_id，我们通过配置或其他方式在外部拿到，但既然我们要改 prompt 我们应该让 context 知道 bot 的身份
+        
         # 时间间隔计算
         time_since_group = 0.0
         time_since_user = 9999.0
@@ -318,7 +320,8 @@ class TopicManager:
             memory_section = "User Memories:\n" + "\n".join(f"- {m}" for m in user_memories)
 
         return {
-            "persona": config.prompts.persona,
+            "bot_id": bot_id,
+            "persona": config.prompts.persona.replace("{bot_id}", bot_id),
             "recent_messages": recent,
             "topic_summary": topic.get("summary"),
             "past_topics": past_summary,

@@ -70,9 +70,16 @@ class QJinEraPlugin(Plugin):
         nickname = getattr(event.sender, "nickname", "") if hasattr(event, "sender") else ""
 
         logger.debug("收到消息 [群%s 用户%s]: %s", group_id, user_id, content[:50])
+        bot_id = str(event.self_id)
+        logger.debug("当前 bot_id 为: %s", bot_id)
+
+        if content.strip() == "/clear":
+            topic_manager.switch_topic(group_id)
+            await event.reply("已清空当前群聊话题的短期上下文。")
+            return
 
         # 1. 话题管理 & 上下文
-        context = topic_manager.handle_message(group_id, user_id, content, nickname)
+        context = topic_manager.handle_message(group_id, user_id, content, nickname, bot_id)
 
         # 2. @ 检测
         if _is_mentioned(event):
@@ -108,7 +115,7 @@ class QJinEraPlugin(Plugin):
                         if self._at_tasks.get(group_id) == asyncio.current_task():
                              self._at_tasks.pop(group_id, None)
 
-                        latest_ctx = topic_manager.get_latest_context(group_id)
+                        latest_ctx = topic_manager.get_latest_context(group_id, bot_id) 
                         if latest_ctx:
                             latest_ctx["is_at_mentioned"] = True
                             await self._respond(latest_ctx, event)
@@ -142,7 +149,8 @@ class QJinEraPlugin(Plugin):
             self._debounce_tasks.pop(group_id, None)
 
         async with self._get_group_lock(group_id):
-            context = topic_manager.get_latest_context(group_id)
+            bot_id = str(event.self_id)
+            context = topic_manager.get_latest_context(group_id, bot_id)
             if not context:
                 return
 
@@ -159,7 +167,7 @@ class QJinEraPlugin(Plugin):
             if result.get("topic_shifted"):
                 logger.info("Judge 感知话题转变 [群%s]，归档旧话题并创建新话题", group_id)
                 topic_manager.switch_topic(group_id)
-                context = topic_manager.get_latest_context(group_id)
+                context = topic_manager.get_latest_context(group_id, bot_id)
                 if not context:
                     return
 
@@ -206,7 +214,8 @@ class QJinEraPlugin(Plugin):
             return
 
         logger.debug("提取用户 %s 的记忆...", user_id)
-        new_facts = await llm.extract_memories(user_msgs[-10:])
+        active_memories = [m["content"] for m in mem_store.get_active_details(user_id)]
+        new_facts = await llm.extract_memories(user_msgs[-10:], active_memories)
 
         for fact in new_facts:
             mem_store.add(user_id, group_id, fact)
@@ -231,6 +240,7 @@ def _preprocess_message(raw: str) -> str:
     """预处理 CQ 码消息，将图片和表情替换为文本标记。"""
     text = re.sub(r'\[CQ:image,[^\]]+\]', ' [图片] ', raw)
     text = re.sub(r'\[CQ:face,[^\]]+\]', ' [表情] ', text)
+    text = re.sub(r'\[CQ:at,qq=(\d+|all)\]', r'[@\1] ', text)
     text = re.sub(r'\[CQ:[^\]]+\]', '', text).strip()
     return text or "[表情/图片]"
 
