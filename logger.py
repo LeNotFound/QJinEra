@@ -2,7 +2,7 @@
 QJinEra 异步日志系统。
 
 - 控制台：彩色输出，保持 [ModuleName] 风格的可读性
-- 文件：logs/qjinera_YYYY-MM-DD.log，按天一个文件
+- 文件：logs/latest.log，每天午夜自动轮转为 logs/qjinera_YYYY-MM-DD.log
 - 异步：QueueHandler + QueueListener，文件 I/O 不阻塞事件循环
 
 Usage:
@@ -114,8 +114,19 @@ def setup_logging(level: str = "INFO", log_dir: str = "logs") -> None:
     console.setFormatter(_ConsoleFormatter())
 
     # — 文件 Handler —
-    log_file = os.path.join(log_dir, f"qjinera_{datetime.now().strftime('%Y-%m-%d')}.log")
-    file_h = logging.FileHandler(log_file, encoding="utf-8")
+    log_file = os.path.join(log_dir, "latest.log")
+    file_h = logging.handlers.TimedRotatingFileHandler(
+        log_file, when="midnight", interval=1, backupCount=0, encoding="utf-8"
+    )
+    
+    def _namer(default_name: str) -> str:
+        dir_name, base_name = os.path.split(default_name)
+        if base_name.startswith("latest.log."):
+            date_str = base_name[len("latest.log."):]
+            return os.path.join(dir_name, f"qjinera_{date_str}.log")
+        return default_name
+
+    file_h.namer = _namer
     file_h.setLevel(logging.DEBUG)                  # 文件始终 DEBUG
     file_h.setFormatter(_FileFormatter())
 
