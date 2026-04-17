@@ -29,6 +29,7 @@ url = "/"
 api_base = "https://api.openai.com/v1/"
 api_key = "YOUR_OPENAI_API_KEY"
 proxy = ""  # HTTP proxy if needed, e.g., "http://127.0.0.1:7890"
+timeout = 60.0  # API request timeout in seconds
 
 # Model selection
 # judge_model = "gemini-2.5-flash-lite"  # Small model for interruption judgment

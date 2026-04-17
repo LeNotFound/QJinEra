@@ -41,6 +41,7 @@ class LLMConfig(BaseModel):
     api_base: str
     api_key: str
     proxy: str | None = None
+    timeout: float = 60.0
     judge_model: str = "gpt-3.5-turbo"
     chat_model: str = "gpt-4"
 

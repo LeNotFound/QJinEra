@@ -25,6 +25,7 @@ logger = get_logger("LLM")
 _api_key: str = config.llm.api_key
 _api_base: str = config.llm.api_base
 _proxy: str | None = config.llm.proxy
+_timeout: float = config.llm.timeout
 _judge_model: str = config.llm.judge_model
 _chat_model: str = config.llm.chat_model
 
@@ -33,6 +34,7 @@ _prompts = config.prompts          # PromptsConfig (frozen)
 _client = openai.AsyncOpenAI(
     api_key=_api_key,
     base_url=_api_base,
+    timeout=_timeout,
     http_client=openai.DefaultAsyncHttpxClient(proxy=_proxy) if _proxy else None,
 )
 
