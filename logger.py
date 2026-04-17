@@ -106,6 +106,35 @@ def setup_logging(level: str = "INFO", log_dir: str = "logs") -> None:
     global _listener
 
     os.makedirs(log_dir, exist_ok=True)
+
+    # --- 跨天重启日志检查与归档 ---
+    latest_log_path = os.path.join(log_dir, "latest.log")
+    if os.path.exists(latest_log_path):
+        try:
+            mtime = os.path.getmtime(latest_log_path)
+            last_mod_date = datetime.fromtimestamp(mtime).date()
+            today_date = datetime.today().date()
+            
+            # 如果文件的最后修改日期不是今天，则代表跨天重启，将其归档
+            if last_mod_date != today_date:
+                date_str = last_mod_date.strftime("%Y-%m-%d")
+                backup_log_path = os.path.join(log_dir, f"qjinera_{date_str}.log")
+                
+                if not os.path.exists(backup_log_path):
+                    os.rename(latest_log_path, backup_log_path)
+                else:
+                    # 如果目标备份文件存在，则采用安全的追加模式
+                    with open(latest_log_path, 'r', encoding='utf-8') as src:
+                        content = src.read()
+                    with open(backup_log_path, 'a', encoding='utf-8') as dst:
+                        if content and content[0] != '\n':
+                            dst.write("\n")
+                        dst.write(content)
+                    os.remove(latest_log_path)
+        except Exception as e:
+            # 异常时不要阻断启动
+            print(f"日志初始化时处理跨天遗留文件出错: {e}", file=sys.stderr)
+
     log_level = getattr(logging, level.upper(), logging.INFO)
 
     # — 控制台 Handler —
