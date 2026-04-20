@@ -14,7 +14,7 @@ from alicebot import Bot
 from config import config
 from logger import get_logger
 from services import llm
-from services.memory_service import consolidate_if_needed
+from services.memory_service import consolidate_if_needed, consolidate_group_vibe_task
 from services.topic import topic_manager
 
 logger = get_logger("Scheduler")
@@ -44,11 +44,15 @@ async def _init_groups(bot: Bot) -> None:
         now = time.time()
         for g in groups:
             gid = str(g["group_id"])
+            group_name = g.get("group_name", "")
             if not topic_manager.is_group_allowed(gid):
                 continue
+            # 初始化群组到 groups 表（新群自动以 public 初始化）
+            from services.storage import groups as group_store
+            group_store.upsert(gid, group_name)
             if gid not in topic_manager.group_last_activity:
                 topic_manager.group_last_activity[gid] = now
-                logger.info("发现群 %s，初始化计时器", gid)
+                logger.info("发现群 %s (%s)，初始化计时器", gid, group_name)
     except Exception:
         logger.error("获取群列表失败", exc_info=True)
 
@@ -67,6 +71,8 @@ async def _loop(bot: Bot) -> None:
             for group_id, participants in pending:
                 for user_id in participants:
                     asyncio.create_task(consolidate_if_needed(user_id, group_id))
+                # 群氛围更新（与用户记忆巩固并行）
+                asyncio.create_task(consolidate_group_vibe_task(group_id))
         except Exception:
             logger.error("巡检过期话题失败", exc_info=True)
 

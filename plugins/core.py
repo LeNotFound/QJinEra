@@ -163,6 +163,11 @@ class QJinEraPlugin(Plugin):
                 context.get("topic_summary", ""),
             )
 
+            # 记录 world_lore (Phase 3)
+            entities = result.get("mentioned_entities", [])
+            if entities:
+                context["mentioned_entities"] = entities # 让下文能拿到
+
             # 话题转变感知
             if result.get("topic_shifted"):
                 logger.info("Judge 感知话题转变 [群%s]，归档旧话题并创建新话题", group_id)
@@ -174,7 +179,7 @@ class QJinEraPlugin(Plugin):
             # 记忆提取信号
             if result.get("has_significant_info"):
                 user_id = str(event.user_id)
-                logger.debug("Judge 发现重要信息，提取记忆 [用户%s]", user_id)
+                logger.debug("Judge 发现重要信息，提取记忆/世界设定 [群:%s 用户:%s]", group_id, user_id)
                 asyncio.create_task(self._extract_user_memories(group_id, user_id))
 
             # 插话判定（传入当前的上下文）
@@ -187,6 +192,14 @@ class QJinEraPlugin(Plugin):
     async def _respond(self, context: dict, event: GroupMessageEvent) -> None:
         """调用 Writer 模型生成回复并发送。"""
         context["should_return_summary"] = True
+        
+        # [Phase 3] 从 context 提取实体，并去 world_lore 表查数据给 Chat Writer
+        from services.storage import world_lore
+        entities = context.get("mentioned_entities")
+        if entities:
+            lores = world_lore.get_by_entities(str(event.group_id), entities)
+            context["world_lore"] = lores
+        
         chat_result = await llm.generate_chat(context)
 
         messages = chat_result.get("messages", [])
@@ -204,22 +217,53 @@ class QJinEraPlugin(Plugin):
             topic_manager.add_bot_message(str(event.group_id), msg, bot_id, "柒槿年")
 
     async def _extract_user_memories(self, group_id: str, user_id: str) -> None:
-        """从当前话题中提取用户的新事实。"""
+        """从当前话题中提取用户的新事实和群世界观（World Lore）。"""
+        from services.storage import world_lore
+        
         topic = topic_manager.get_current_topic(group_id)
         if not topic:
             return
 
-        user_msgs = [m["content"] for m in topic["messages"] if m["user_id"] == user_id]
-        if len(user_msgs) < 2:
+        msgs = topic["messages"]
+        if len(msgs) < 2:
             return
 
-        logger.debug("提取用户 %s 的记忆...", user_id)
-        active_memories = [m["content"] for m in mem_store.get_active_details(user_id)]
-        new_facts = await llm.extract_memories(user_msgs[-10:], active_memories)
+        logger.debug("提取围绕用户 %s 展开的记忆与设定...", user_id)
+        
+        # 传递最近 10 条带身份和格式的消息，好让 LLM 能提取出 source_id 和 subject_id
+        import datetime
+        recent = [
+            f"[{datetime.datetime.fromtimestamp(m['timestamp']).strftime('%H:%M:%S')}] {m.get('nickname') or m['user_id']}({m['user_id']}): {m['content']}"
+            for m in msgs[-10:]
+        ]
 
-        for fact in new_facts:
-            mem_store.add(user_id, group_id, fact)
-            logger.info("+ 记忆: %s [用户%s]", fact, user_id)
+        active_memories = mem_store.get_for_context(user_id, limit=20)
+        extraction_result = await llm.extract_memories(recent, active_memories)
+
+        if not isinstance(extraction_result, dict):
+            # 兼容旧逻辑
+            facts = extraction_result
+            lores = []
+        else:
+            facts = extraction_result.get("facts", [])
+            lores = extraction_result.get("world_lore", [])
+
+        for fact_dict in facts:
+            # 兼容：如果 LLM 没有提取 subject_id，我们就认为是关于这个用户的
+            if "subject_id" not in fact_dict:
+                fact_dict["subject_id"] = user_id
+            if "source_id" not in fact_dict:
+                fact_dict["source_id"] = user_id
+            
+            mem_store.add(user_id, group_id, fact_dict)
+            logger.info("+ 事实: %s [涉及对象:%s, 来源:%s]", fact_dict["content"], fact_dict["subject_id"], fact_dict["source_id"])
+            
+        for lore in lores:
+            name = lore.get("entity_name")
+            desc = lore.get("description")
+            if name and desc:
+                world_lore.add_or_update(group_id, user_id, name, desc)
+                logger.info("+ 世界观: [%s] %s [提供者%s]", name, desc, user_id)
 
     # ------------------------------------------------------------------
     #  工具方法

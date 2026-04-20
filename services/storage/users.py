@@ -10,7 +10,7 @@ def get(group_id: str, user_id: str) -> dict | None:
     with get_db() as db:
         row = db.execute(
             "SELECT user_id, group_id, nickname, description, "
-            "interaction_count, last_active_time "
+            "interaction_count, last_active_time, intimacy_score, relationship_stage "
             "FROM users WHERE group_id = ? AND user_id = ?",
             (group_id, user_id),
         ).fetchone()

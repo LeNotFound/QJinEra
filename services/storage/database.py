@@ -48,6 +48,8 @@ def init_db() -> None:
                 nickname          TEXT    DEFAULT '',
                 description       TEXT    DEFAULT '',
                 interaction_count INTEGER DEFAULT 0,
+                intimacy_score    INTEGER DEFAULT 0,
+                relationship_stage TEXT   DEFAULT 'Stranger',
                 last_active_time  REAL,
                 PRIMARY KEY (user_id, group_id)
             );
@@ -64,16 +66,84 @@ def init_db() -> None:
             );
 
             CREATE TABLE IF NOT EXISTS memories (
-                id        INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id   TEXT    NOT NULL,
-                group_id  TEXT    NOT NULL,
-                content   TEXT    NOT NULL,
-                timestamp REAL    NOT NULL,
-                status    TEXT    DEFAULT 'active',
-                UNIQUE(user_id, content)
+                memory_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                subject_id TEXT   NOT NULL,
+                source_id  TEXT   NOT NULL,
+                group_id   TEXT   NOT NULL,
+                content    TEXT   NOT NULL,
+                status     TEXT   DEFAULT 'active',
+                created_at REAL   NOT NULL,
+                UNIQUE(subject_id, content)
+            );
+
+            CREATE TABLE IF NOT EXISTS world_lore (
+                lore_id       INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_id      TEXT    NOT NULL,
+                entity_name   TEXT    NOT NULL,
+                description   TEXT    NOT NULL,
+                source_id     TEXT    NOT NULL,
+                created_at    REAL    NOT NULL,
+                updated_at    REAL    NOT NULL,
+                UNIQUE(group_id, entity_name)
+            );
+
+            CREATE TABLE IF NOT EXISTS bot_status (
+                bot_id        TEXT    PRIMARY KEY,
+                energy        REAL    DEFAULT 100.0,
+                mood          TEXT    DEFAULT '平静',
+                current_state TEXT    DEFAULT 'active',
+                last_updated  REAL    NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS groups (
+                group_id          TEXT    PRIMARY KEY,
+                group_name        TEXT    DEFAULT '',
+                intimacy_level    TEXT    DEFAULT 'public',
+                behavior_overlay  TEXT    DEFAULT '',
+                group_vibe        TEXT    DEFAULT '',
+                created_at        REAL    NOT NULL DEFAULT 0,
+                updated_at        REAL    NOT NULL DEFAULT 0
             );
         """)
 
+        # -------------------------------------------------------------
+        #  以下为 V4.0 Schema 自适应升级逻辑 (保障已有数据库兼容)
+        # -------------------------------------------------------------
+        cursor = db.cursor()
+        
+        # 1. 检查 users 表是否需要补充 V4.0 字段 (intimacy_score, relationship_stage)
+        cursor.execute("PRAGMA table_info(users)")
+        users_columns = [col["name"] for col in cursor.fetchall()]
+        if "intimacy_score" not in users_columns:
+            db.execute("ALTER TABLE users ADD COLUMN intimacy_score INTEGER DEFAULT 0")
+        if "relationship_stage" not in users_columns:
+            db.execute("ALTER TABLE users ADD COLUMN relationship_stage TEXT DEFAULT 'Stranger'")
+
+        # 2. 检查 memories 表是否是旧版 (有 user_id，没 subject_id)
+        cursor.execute("PRAGMA table_info(memories)")
+        memories_columns = [col["name"] for col in cursor.fetchall()]
+        if "user_id" in memories_columns and "subject_id" not in memories_columns:
+            # 这是一个重大结构调整：需要重建表或直接清空旧版表
+            # 由于重构较大且测试阶段允许清空：备份 -> 删除 -> 重建
+            db.execute("ALTER TABLE memories RENAME TO memories_v3_backup")
+            db.executescript("""
+                CREATE TABLE memories (
+                    memory_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    subject_id TEXT   NOT NULL,
+                    source_id  TEXT   NOT NULL,
+                    group_id   TEXT   NOT NULL,
+                    content    TEXT   NOT NULL,
+                    status     TEXT   DEFAULT 'active',
+                    created_at REAL   NOT NULL,
+                    UNIQUE(subject_id, content)
+                );
+            """)
+            # V4的数据迁移：从旧版提取记忆到新版中
+            db.execute("""
+                INSERT OR IGNORE INTO memories (subject_id, source_id, group_id, content, status, created_at)
+                SELECT user_id, user_id, group_id, content, status, timestamp
+                FROM memories_v3_backup
+            """)
 
 @contextmanager
 def get_db() -> Generator[sqlite3.Connection, None, None]:

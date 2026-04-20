@@ -67,12 +67,13 @@ class PromptsConfig(BaseModel):
     """所有 Prompt 模板。"""
     model_config = ConfigDict(frozen=True)
 
-    judge_system: str = ""
-    chat_system: str = ""
-    proactive_system: str = ""
-    persona: str = ""
-    memory_consolidator_system: str = ""
-    memory_extractor_system: str = ""
+    persona_file: str = "prompts/personas/qjinera.ujson"
+    judge_system_file: str = "prompts/judge_system.jinja"
+    chat_system_file: str = "prompts/chat_system.jinja"
+    proactive_system_file: str = "prompts/proactive_system.jinja"
+    memory_consolidator_system_file: str = "prompts/memory_consolidator.jinja"
+    memory_extractor_system_file: str = "prompts/memory_extractor.jinja"
+    group_consolidator_system_file: str = "prompts/group_consolidator.jinja"
 
 
 class LogConfig(BaseModel):

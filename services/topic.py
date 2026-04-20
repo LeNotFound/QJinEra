@@ -13,7 +13,7 @@ from typing import Any
 
 from config import config
 from logger import get_logger
-from services.storage import memories, topics, users
+from services.storage import memories, topics, users, groups as group_store
 
 logger = get_logger("TopicManager")
 
@@ -99,7 +99,11 @@ class TopicManager:
 
         for gid in expired:
             topic = self.active_topics[gid]
-            participants = {msg["user_id"] for msg in topic["messages"]}
+            # 找到话题出现过的所有发言者并在后续去除 bot 或者是特定的 nickname，我们在 check 时不直接处理，或者提供一个排除列表
+            participants = {
+                msg["user_id"] for msg in topic["messages"] 
+                if msg["user_id"] and msg["nickname"] != "QJinEra" and msg["nickname"] != "柒槿年"
+            }
             logger.info("归档群 %s 的过期话题 (ID=%d)", gid, topic["topic_id"])
 
             topics.update_summary(
@@ -297,9 +301,10 @@ class TopicManager:
                     time_since_user = now - msg["timestamp"]
                     break
 
-        # 最近 10 条消息
+        import datetime
+        # 最近 10 条消息 (包含格式化的时间戳，有助于 LLM 理解情绪和沉默间隔)
         recent = [
-            f"{m.get('nickname') or m['user_id']}: {m['content']}"
+            f"[{datetime.datetime.fromtimestamp(m['timestamp']).strftime('%H:%M:%S')}] {m.get('nickname') or m['user_id']}: {m['content']}"
             for m in msgs[-10:]
         ]
 
@@ -307,7 +312,7 @@ class TopicManager:
         past = topics.get_recent(group_id, limit=5)
         past_summary = "\n".join(f"- {t['summary']}" for t in past if t["summary"])
 
-        # 用户画像
+        # 用户特征（新增 intimacy_score 和 relationship_stage）
         user_profile = users.get(group_id, user_id)
         user_desc = ""
         if user_profile and user_profile.get("description"):
@@ -318,10 +323,23 @@ class TopicManager:
         memory_section = ""
         if user_memories:
             memory_section = "User Memories:\n" + "\n".join(f"- {m}" for m in user_memories)
+            
+        # Bot 自身的记忆 (在 V4 设计中，Extractor 会将关于 Bot 自身的事实也剥离出来，subject_id = bot_id)
+        if bot_id:
+            bot_memories = memories.get_for_context(bot_id, limit=20)
+            if bot_memories:
+                if memory_section:
+                    memory_section += "\n\n"
+                memory_section += "Bot's Own Recent Memories:\n" + "\n".join(f"- {m}" for m in bot_memories)
+
+        # 这里其实也应该返回 user_profile, 以便在外部 inject 给 chat_system.jinja
+
+        # 群组上下文
+        group_info = group_store.get(group_id)
 
         return {
             "bot_id": bot_id,
-            "persona": config.prompts.persona.replace("{bot_id}", bot_id),
+            "group_context": group_info,
             "recent_messages": recent,
             "topic_summary": topic.get("summary"),
             "past_topics": past_summary,
@@ -331,6 +349,7 @@ class TopicManager:
             "time_since_last_group_message": time_since_group,
             "time_since_last_user_message": time_since_user,
             "is_at_mentioned": False,           # 由 plugin 覆盖
+            "user_profile_raw": user_profile,   # 为 chat_system.jinja 提供 raw profile (intimacy_score 等)
         }
 
 
