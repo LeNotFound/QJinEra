@@ -17,7 +17,7 @@ logger = get_logger("MemoryService")
 
 async def consolidate_if_needed(user_id: str, group_id: str) -> None:
     """检查是否满足巩固条件，满足则执行 Cyber Echo。"""
-    active_mem = memories.get_active_details(user_id)
+    active_mem = memories.get_active_details(user_id, group_id)
 
     if len(active_mem) < 3:
         return

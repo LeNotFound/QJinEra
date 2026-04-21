@@ -37,14 +37,14 @@ def get_for_context(user_id: str, limit: int = 20) -> list[str]:
         return [r["content"] for r in rows]
 
 
-def get_active_details(user_id: str) -> list[dict]:
+def get_active_details(user_id: str, group_id: str) -> list[dict]:
     """获取所有 active 记忆的完整信息（用于 Cyber Echo 巩固）。"""
     with get_db() as db:
         rows = db.execute(
             "SELECT memory_id as id, content, created_at as timestamp FROM memories "
-            "WHERE subject_id = ? AND status = 'active' "
+            "WHERE subject_id = ? AND group_id = ? AND status = 'active' "
             "ORDER BY created_at ASC",
-            (user_id,),
+            (user_id, group_id),
         ).fetchall()
         return [dict(r) for r in rows]
 
@@ -71,3 +71,4 @@ def prune_expired(retention_hours: int = 24) -> int:
             (expiry,),
         )
         return cur.rowcount
+

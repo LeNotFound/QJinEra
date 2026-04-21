@@ -255,7 +255,7 @@ class QJinEraPlugin(Plugin):
                 pass
             recent.append(f"[{datetime.datetime.fromtimestamp(m['timestamp']).strftime('%H:%M:%S')}] {m.get('nickname') or m['user_id']}({m['user_id']}): {text_content}")
 
-        active_memories = mem_store.get_for_context(user_id, limit=20)
+        active_memories = mem_store.get_for_context(user_id, group_id, limit=20)
         extraction_result = await llm.extract_memories(recent, active_memories)
 
         if not isinstance(extraction_result, dict):
