@@ -213,3 +213,4 @@ test_log.txt
 config.toml
 .gemini/
 qjinera.ujson
+data/images

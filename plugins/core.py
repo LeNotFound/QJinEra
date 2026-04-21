@@ -9,6 +9,11 @@ from __future__ import annotations
 import asyncio
 import random
 import re
+import os
+import uuid
+import base64
+import json
+import httpx
 
 from alicebot import Plugin
 from alicebot.adapter.cqhttp.event import GroupMessageEvent
@@ -66,20 +71,27 @@ class QJinEraPlugin(Plugin):
         if not topic_manager.is_group_allowed(group_id):
             return
 
-        content = _preprocess_message(str(event.message))
+        content, memory_images = await _preprocess_message(str(event.message))
         nickname = getattr(event.sender, "nickname", "") if hasattr(event, "sender") else ""
 
-        logger.debug("收到消息 [群%s 用户%s]: %s", group_id, user_id, content[:50])
         bot_id = str(event.self_id)
-        logger.debug("当前 bot_id 为: %s", bot_id)
+        
+        try:
+            parsed_content = json.loads(content)
+            text_content = parsed_content.get("text", "")
+        except json.JSONDecodeError:
+            text_content = content
 
-        if content.strip() == "/clear":
+        logger.debug("收到消息 [群%s 用户%s]: %s", group_id, user_id, text_content[:50])
+        logger.debug("当前 bot_id 为: %s", bot_id)
+            
+        if text_content.strip() == "/clear":
             topic_manager.switch_topic(group_id)
             await event.reply("已清空当前群聊话题的短期上下文。")
             return
 
         # 1. 话题管理 & 上下文
-        context = topic_manager.handle_message(group_id, user_id, content, nickname, bot_id)
+        context = topic_manager.handle_message(group_id, user_id, content, nickname, bot_id, memory_images)
 
         # 2. @ 检测
         if _is_mentioned(event):
@@ -232,10 +244,16 @@ class QJinEraPlugin(Plugin):
         
         # 传递最近 10 条带身份和格式的消息，好让 LLM 能提取出 source_id 和 subject_id
         import datetime
-        recent = [
-            f"[{datetime.datetime.fromtimestamp(m['timestamp']).strftime('%H:%M:%S')}] {m.get('nickname') or m['user_id']}({m['user_id']}): {m['content']}"
-            for m in msgs[-10:]
-        ]
+        import json
+        recent = []
+        for m in msgs[-10:]:
+            text_content = m['content']
+            try:
+                parsed_content = json.loads(text_content)
+                text_content = parsed_content.get("text", text_content)
+            except (json.JSONDecodeError, TypeError):
+                pass
+            recent.append(f"[{datetime.datetime.fromtimestamp(m['timestamp']).strftime('%H:%M:%S')}] {m.get('nickname') or m['user_id']}({m['user_id']}): {text_content}")
 
         active_memories = mem_store.get_for_context(user_id, limit=20)
         extraction_result = await llm.extract_memories(recent, active_memories)
@@ -280,13 +298,66 @@ class QJinEraPlugin(Plugin):
 #  模块级工具函数
 # ---------------------------------------------------------------------------
 
-def _preprocess_message(raw: str) -> str:
-    """预处理 CQ 码消息，将图片和表情替换为文本标记。"""
+IMAGE_DIR = "data/images"
+os.makedirs(IMAGE_DIR, exist_ok=True)
+
+async def _preprocess_message(raw: str) -> tuple[str, list[str]]:
+    """
+    预处理 CQ 码消息，将表情替换为文本标记，提取并下载图片 URL，返回 JSON string 和 memory_images 字典。
+    """
+    from services.cq_faces import get_face_text
+
+    # 1. 替换 CQ:face
+    def replace_face(match):
+        cq_content = match.group(1)
+        params = dict(p.split('=', 1) for p in cq_content.split(',') if '=' in p)
+        face_id = int(params.get('id', -1))
+        return f" {get_face_text(face_id)} "
+    
+    raw = re.sub(r'\[CQ:face,([^\]]+)\]', replace_face, raw)
+
+    # 2. 提取并下载 CQ:image
+    images = []
+    memory_images = []
+    
+    image_matches = re.finditer(r'\[CQ:image,([^\]]+)\]', raw)
+    for match in image_matches:
+        cq_content = match.group(1)
+        params = dict(p.split('=', 1) for p in cq_content.split(',') if '=' in p)
+        url = params.get('url')
+        if url:
+            try:
+                # 因为 URL 中可能有些实体被转义，如 &amp; -> &
+                url = url.replace("&amp;", "&")
+                async with httpx.AsyncClient() as client:
+                    resp = await client.get(url, timeout=10.0)
+                    resp.raise_for_status()
+                    image_data = resp.content
+                    b64_data = base64.b64encode(image_data).decode('utf-8')
+                    file_uuid = str(uuid.uuid4())
+                    file_path = os.path.join(IMAGE_DIR, f"{file_uuid}.jpg").replace("\\", "/") # 保证存储路径正常
+                    
+                    # 异步落盘，防止阻塞
+                    async def save_image(path, data):
+                        with open(path, "wb") as f:
+                            f.write(data)
+                    asyncio.create_task(save_image(file_path, image_data))
+                    
+                    images.append(file_path)
+                    memory_images.append(b64_data)
+            except Exception as e:
+                logger.error(f"下载图片失败 {url}: {e}")
+
+    # 去除原始的图片 CQ 码和其他不需要的 CQ 码
     text = re.sub(r'\[CQ:image,[^\]]+\]', ' [图片] ', raw)
-    text = re.sub(r'\[CQ:face,[^\]]+\]', ' [表情] ', text)
     text = re.sub(r'\[CQ:at,qq=(\d+|all)\]', r'[@\1] ', text)
     text = re.sub(r'\[CQ:[^\]]+\]', '', text).strip()
-    return text or "[表情/图片]"
+    
+    content_dict = {"text": text or "[图片/表情]"}
+    if images:
+        content_dict["images"] = images
+    
+    return json.dumps(content_dict, ensure_ascii=False), memory_images
 
 
 def _is_mentioned(event: GroupMessageEvent) -> bool:

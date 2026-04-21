@@ -76,17 +76,32 @@ async def _call(
     model: str,
     system_prompt: str,
     user_content: str,
+    images: list[str] = None,
     *,
     json_mode: bool = True,
 ) -> dict[str, Any]:
     """统一的 LLM 调用入口。"""
     logger.debug("请求 %s ... system_prompt 长度: %d, user_content 长度: %d\n完整 user_content:\n%s", model, len(system_prompt), len(user_content), user_content)
+    
+    images = images or []
+    if images:
+        message_content = [{"type": "text", "text": user_content}]
+        for b64 in images:
+            message_content.append({
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/jpeg;base64,{b64}"
+                }
+            })
+    else:
+        message_content = user_content
+
     try:
         resp = await _client.chat.completions.create(
             model=model,
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_content},
+                {"role": "user", "content": message_content},
             ],
             response_format={"type": "json_object"} if json_mode else None,
         )
@@ -111,6 +126,8 @@ async def judge_interruption(context: dict[str, Any]) -> dict[str, Any]:
     """调用 Judge 模型判断是否插话。"""
     bot_id = context.get("bot_id", "")
     group_context = context.pop("group_context", None) or {}
+    recent_images = context.pop("recent_images", [])
+
     system_prompt = judge_template.render(
         persona=_persona_data, bot_id=bot_id, group_context=group_context,
     )
@@ -118,6 +135,7 @@ async def judge_interruption(context: dict[str, Any]) -> dict[str, Any]:
         _judge_model,
         system_prompt,
         json.dumps(context, ensure_ascii=False),
+        images=recent_images,
     )
 
 
@@ -127,7 +145,8 @@ async def generate_chat(context: dict[str, Any]) -> dict[str, Any]:
     user_profile = context.pop("user_profile_raw", {}) or {}
     world_lore = context.pop("world_lore", []) or []
     group_context = context.pop("group_context", None) or {}
-    
+    recent_images = context.pop("recent_images", [])
+
     # 目前 Life Engine 进度还在 Phase 2 的 DDL 阶段，所以暂时写死一个默认的兜底字典
     bot_status = {"energy": 100.0, "mood": "平静"}
     
@@ -143,6 +162,7 @@ async def generate_chat(context: dict[str, Any]) -> dict[str, Any]:
         _chat_model,
         system_prompt,
         json.dumps(context, ensure_ascii=False),
+        images=recent_images,
     )
 
 

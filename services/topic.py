@@ -123,7 +123,7 @@ class TopicManager:
     # ------------------------------------------------------------------
 
     def handle_message(
-        self, group_id: str, user_id: str, content: str, nickname: str = "", bot_id: str = "",
+        self, group_id: str, user_id: str, content: str, nickname: str = "", bot_id: str = "", memory_images: list[str] = None
     ) -> dict[str, Any] | None:
         """处理新消息：更新话题、构建上下文。"""
         if not self.is_group_allowed(group_id):
@@ -152,12 +152,18 @@ class TopicManager:
 
         # 追加消息
         current["last_msg_time"] = now
-        current["messages"].append({
+        
+        msg_obj = {
             "user_id": user_id,
             "nickname": nickname,
             "content": content,
             "timestamp": now,
-        })
+        }
+        if memory_images:
+            msg_obj["memory_images"] = memory_images
+            
+        current["messages"].append(msg_obj)
+        
         topics.add_message(current["topic_id"], user_id, content, now, nickname)
         self.group_last_activity[group_id] = now
 
@@ -302,11 +308,35 @@ class TopicManager:
                     break
 
         import datetime
-        # 最近 10 条消息 (包含格式化的时间戳，有助于 LLM 理解情绪和沉默间隔)
-        recent = [
-            f"[{datetime.datetime.fromtimestamp(m['timestamp']).strftime('%H:%M:%S')}] {m.get('nickname') or m['user_id']}: {m['content']}"
-            for m in msgs[-10:]
-        ]
+        import json
+        import os
+        import base64
+
+        recent = []
+        recent_images = []
+        for m in msgs[-10:]:
+            timestamp_str = datetime.datetime.fromtimestamp(m['timestamp']).strftime('%H:%M:%S')
+            speaker = m.get('nickname') or m['user_id']
+            
+            text = m['content']
+            try:
+                content_dict = json.loads(text)
+                if isinstance(content_dict, dict) and "text" in content_dict:
+                    text = content_dict["text"]
+                    if "images" in content_dict:
+                        if m.get("memory_images"):
+                            # 快车道：直接从当次内存中拿
+                            recent_images.extend(m["memory_images"])
+                        else:
+                            # 历史数据：从磁盘读取图片为 Base64
+                            for img_path in content_dict["images"]:
+                                if os.path.exists(img_path):
+                                    with open(img_path, "rb") as f:
+                                        recent_images.append(base64.b64encode(f.read()).decode('utf-8'))
+            except (json.JSONDecodeError, TypeError):
+                pass
+            
+            recent.append(f"[{timestamp_str}] {speaker}: {text}")
 
         # 历史话题摘要
         past = topics.get_recent(group_id, limit=5)
@@ -341,6 +371,7 @@ class TopicManager:
             "bot_id": bot_id,
             "group_context": group_info,
             "recent_messages": recent,
+            "recent_images": recent_images,
             "topic_summary": topic.get("summary"),
             "past_topics": past_summary,
             "user_profile": user_desc,
