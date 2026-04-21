@@ -13,6 +13,7 @@ from typing import Any
 
 import openai
 from jinja2 import Environment, FileSystemLoader
+from tenacity import AsyncRetrying, stop_after_attempt, retry_if_exception, wait_fixed
 
 from config import config
 from logger import get_logger
@@ -27,6 +28,7 @@ _api_key: str = config.llm.api_key
 _api_base: str = config.llm.api_base
 _proxy: str | None = config.llm.proxy
 _timeout: float = config.llm.timeout
+_maxtries: int = config.llm.maxtries
 _judge_model: str = config.llm.judge_model
 _chat_model: str = config.llm.chat_model
 
@@ -72,6 +74,13 @@ _client = openai.AsyncOpenAI(
 #  内部工具
 # ---------------------------------------------------------------------------
 
+def _is_503_error(e: BaseException) -> bool:
+    """检查是否为 503 错误以决定是否重试"""
+    if isinstance(e, openai.APIStatusError) and e.status_code == 503:
+        logger.warning(f"检测到 503 错误，准备重试: {e}")
+        return True
+    return False
+
 async def _call(
     model: str,
     system_prompt: str,
@@ -97,17 +106,24 @@ async def _call(
         message_content = user_content
 
     try:
-        resp = await _client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": message_content},
-            ],
-            response_format={"type": "json_object"} if json_mode else None,
-        )
-        content = resp.choices[0].message.content
-        logger.debug("响应 (%s): %s", model, content if content else "")
-        return json.loads(content) if json_mode else content
+        async for attempt in AsyncRetrying(
+            stop=stop_after_attempt(_maxtries),
+            retry=retry_if_exception(_is_503_error),
+            wait=wait_fixed(1),
+            reraise=True,
+        ):
+            with attempt:
+                resp = await _client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": message_content},
+                    ],
+                    response_format={"type": "json_object"} if json_mode else None,
+                )
+                content = resp.choices[0].message.content
+                logger.debug("响应 (%s): %s", model, content if content else "")
+                return json.loads(content) if json_mode else content
     except Exception:
         logger.error("LLM 调用失败 (%s)", model, exc_info=True)
         return {}
@@ -124,9 +140,10 @@ def _format_ts(ts: float) -> str:
 
 async def judge_interruption(context: dict[str, Any]) -> dict[str, Any]:
     """调用 Judge 模型判断是否插话。"""
-    bot_id = context.get("bot_id", "")
-    group_context = context.pop("group_context", None) or {}
-    recent_images = context.pop("recent_images", [])
+    ctx = context.copy()
+    bot_id = ctx.get("bot_id", "")
+    group_context = ctx.pop("group_context", None) or {}
+    recent_images = ctx.pop("recent_images", [])
 
     system_prompt = judge_template.render(
         persona=_persona_data, bot_id=bot_id, group_context=group_context,
@@ -134,7 +151,7 @@ async def judge_interruption(context: dict[str, Any]) -> dict[str, Any]:
     return await _call(
         _judge_model,
         system_prompt,
-        json.dumps(context, ensure_ascii=False),
+        json.dumps(ctx, ensure_ascii=False),
         images=recent_images,
     )
 
@@ -142,10 +159,11 @@ async def judge_interruption(context: dict[str, Any]) -> dict[str, Any]:
 async def generate_chat(context: dict[str, Any]) -> dict[str, Any]:
     """调用 Writer 模型生成聊天回复。"""
     # 提取给 Jinja 的变量，避免未定义错误
-    user_profile = context.pop("user_profile_raw", {}) or {}
-    world_lore = context.pop("world_lore", []) or []
-    group_context = context.pop("group_context", None) or {}
-    recent_images = context.pop("recent_images", [])
+    ctx = context.copy()
+    user_profile = ctx.pop("user_profile_raw", {}) or {}
+    world_lore = ctx.pop("world_lore", []) or []
+    group_context = ctx.pop("group_context", None) or {}
+    recent_images = ctx.pop("recent_images", [])
 
     # 目前 Life Engine 进度还在 Phase 2 的 DDL 阶段，所以暂时写死一个默认的兜底字典
     bot_status = {"energy": 100.0, "mood": "平静"}
@@ -161,7 +179,7 @@ async def generate_chat(context: dict[str, Any]) -> dict[str, Any]:
     return await _call(
         _chat_model,
         system_prompt,
-        json.dumps(context, ensure_ascii=False),
+        json.dumps(ctx, ensure_ascii=False),
         images=recent_images,
     )
 

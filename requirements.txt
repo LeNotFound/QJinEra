@@ -6,3 +6,4 @@ streamlit     # [新增] 用于可视化 Dashboard
 pandas        # [新增] 用于数据处理
 jinja2
 httpx
+tenacity
