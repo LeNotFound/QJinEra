@@ -356,7 +356,7 @@ class TopicManager:
             
         # Bot 自身的记忆 (在 V4 设计中，Extractor 会将关于 Bot 自身的事实也剥离出来，subject_id = bot_id)
         if bot_id:
-            bot_memories = memories.get_for_context(bot_id, group_id, limit=20)
+            bot_memories = memories.get_for_context(bot_id, limit=20)
             if bot_memories:
                 if memory_section:
                     memory_section += "\n\n"

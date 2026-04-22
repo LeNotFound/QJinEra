@@ -255,7 +255,7 @@ class QJinEraPlugin(Plugin):
                 pass
             recent.append(f"[{datetime.datetime.fromtimestamp(m['timestamp']).strftime('%H:%M:%S')}] {m.get('nickname') or m['user_id']}({m['user_id']}): {text_content}")
 
-        active_memories = mem_store.get_for_context(user_id, group_id, limit=20)
+        active_memories = mem_store.get_for_context(user_id, limit=20)
         extraction_result = await llm.extract_memories(recent, active_memories)
 
         if not isinstance(extraction_result, dict):
@@ -320,38 +320,70 @@ async def _preprocess_message(raw: str) -> tuple[str, list[str]]:
     images = []
     memory_images = []
     
+    # 建立一个占位符字典，用于稍后替换 raw 中的图片 CQ 码
+    image_replacements = {}
+    
+    import html
+    
     image_matches = re.finditer(r'\[CQ:image,([^\]]+)\]', raw)
     for match in image_matches:
+        full_match = match.group(0)
+        if full_match in image_replacements:
+            continue
+            
         cq_content = match.group(1)
         params = dict(p.split('=', 1) for p in cq_content.split(',') if '=' in p)
+        
+        # 提取动态表情的 summary (如 &#91;晚安&#93; -> [晚安])
+        summary = params.get('summary', '')
+        if summary:
+            summary_text = html.unescape(summary)
+            # 根据 summary 构造 placeholder，不再一律显示 [图片]
+            placeholder = f" [动画表情:{summary_text}] "
+        else:
+            placeholder = " [图片] "
+            
+        image_replacements[full_match] = placeholder
+
         url = params.get('url')
         if url:
             try:
-                # 因为 URL 中可能有些实体被转义，如 &amp; -> &
-                url = url.replace("&amp;", "&")
-                async with httpx.AsyncClient() as client:
-                    resp = await client.get(url, timeout=10.0)
-                    resp.raise_for_status()
-                    image_data = resp.content
-                    b64_data = base64.b64encode(image_data).decode('utf-8')
-                    file_uuid = str(uuid.uuid4())
-                    file_path = os.path.join(IMAGE_DIR, f"{file_uuid}.jpg").replace("\\", "/") # 保证存储路径正常
-                    
-                    # 异步落盘，防止阻塞
-                    async def save_image(path, data):
-                        with open(path, "wb") as f:
-                            f.write(data)
-                    asyncio.create_task(save_image(file_path, image_data))
-                    
-                    images.append(file_path)
-                    memory_images.append(b64_data)
+                # 判断是否是动态表情/GIF (减少不必要的图片下载和存储)
+                file_name = params.get('file', '')
+                is_gif = file_name.endswith('.gif') or 'emoji_id' in params
+                
+                 # 即使是 GIF/动态表情不参与传给 LLM 的图片分析，这避免大量乱七八糟表情图堵塞 context
+                if not is_gif:
+                    # 因为 URL 中可能有些实体被转义，如 &amp; -> &
+                    url = url.replace("&amp;", "&")
+                    async with httpx.AsyncClient() as client:
+                        resp = await client.get(url, timeout=10.0)
+                        resp.raise_for_status()
+                        image_data = resp.content
+                        b64_data = base64.b64encode(image_data).decode('utf-8')
+                        file_uuid = str(uuid.uuid4())
+                        file_path = os.path.join(IMAGE_DIR, f"{file_uuid}.jpg").replace("\\", "/") # 保证存储路径正常
+                        
+                        # 异步落盘，防止阻塞
+                        async def save_image(path, data):
+                            with open(path, "wb") as f:
+                                f.write(data)
+                        asyncio.create_task(save_image(file_path, image_data))
+                        
+                        images.append(file_path)
+                        memory_images.append(b64_data)
             except Exception as e:
                 logger.error(f"下载图片失败 {url}: {e}")
 
-    # 去除原始的图片 CQ 码和其他不需要的 CQ 码
-    text = re.sub(r'\[CQ:image,[^\]]+\]', ' [图片] ', raw)
+    # 将 raw 中的 CQ:image 替换为特定的 placeholder
+    text = raw
+    for img_cq, placeholder in image_replacements.items():
+        text = text.replace(img_cq, placeholder)
+
+    # 去除其他不需要的 CQ 码
     text = re.sub(r'\[CQ:at,qq=(\d+|all)\]', r'[@\1] ', text)
     text = re.sub(r'\[CQ:[^\]]+\]', '', text).strip()
+
     
     content_dict = {"text": text or "[图片/表情]"}
     if images:
