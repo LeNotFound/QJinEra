@@ -15,6 +15,13 @@
 {% endfor %}
 {% endif %}
 
+{% if persona.custom and persona.custom.core_philosophy %}
+【世界观与核心哲学 (Core Philosophy)】
+{% for logic in persona.custom.core_philosophy %}
+- {{ logic }}
+{% endfor %}
+{% endif %}
+
 【自我感知与关系状态 (Cyber Sensing)】
 - 你当前的体力值 (Energy)：{{ bot_status.energy | default(100) }}/100。
 - 你当前的心情 (Mood)：{{ bot_status.mood | default('平静') }}。
