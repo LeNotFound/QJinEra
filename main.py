@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import asyncio
 
+from alicebot import Bot
+
 from config import config
 from logger import get_logger, setup_logging, shutdown_logging
+from services.scheduler import start_scheduler_loop
 from services.storage.database import init_db
 
 logger = get_logger("Main")
@@ -21,13 +24,11 @@ async def main() -> None:
     logger.info("数据库就绪: %s", config.storage.database_file)
 
     # 3. 启动 AliceBot
-    from alicebot import Bot
-
     bot = Bot()
 
     @bot.bot_run_hook
-    async def _(b: Bot):
-        from services.scheduler import start_scheduler_loop
+    async def start_background_tasks(b: Bot) -> None:
+        """注册并启动后台定时任务。"""
         asyncio.create_task(start_scheduler_loop(b))
 
     try:
@@ -40,4 +41,4 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("Bot stopped.")
+        print("\n[System] Bot 已被手动停止。")
