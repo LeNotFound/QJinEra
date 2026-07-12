@@ -107,43 +107,9 @@ def init_db() -> None:
         """)
 
         # -------------------------------------------------------------
-        #  以下为 V4.0 Schema 自适应升级逻辑 (保障已有数据库兼容)
+        #  设置数据库版本 (V4.0 - 破坏性变更，不再兼容旧版 Schema)
         # -------------------------------------------------------------
-        cursor = db.cursor()
-        
-        # 1. 检查 users 表是否需要补充 V4.0 字段 (intimacy_score, relationship_stage)
-        cursor.execute("PRAGMA table_info(users)")
-        users_columns = [col["name"] for col in cursor.fetchall()]
-        if "intimacy_score" not in users_columns:
-            db.execute("ALTER TABLE users ADD COLUMN intimacy_score INTEGER DEFAULT 0")
-        if "relationship_stage" not in users_columns:
-            db.execute("ALTER TABLE users ADD COLUMN relationship_stage TEXT DEFAULT 'Stranger'")
-
-        # 2. 检查 memories 表是否是旧版 (有 user_id，没 subject_id)
-        cursor.execute("PRAGMA table_info(memories)")
-        memories_columns = [col["name"] for col in cursor.fetchall()]
-        if "user_id" in memories_columns and "subject_id" not in memories_columns:
-            # 这是一个重大结构调整：需要重建表或直接清空旧版表
-            # 由于重构较大且测试阶段允许清空：备份 -> 删除 -> 重建
-            db.execute("ALTER TABLE memories RENAME TO memories_v3_backup")
-            db.executescript("""
-                CREATE TABLE memories (
-                    memory_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    subject_id TEXT   NOT NULL,
-                    source_id  TEXT   NOT NULL,
-                    group_id   TEXT   NOT NULL,
-                    content    TEXT   NOT NULL,
-                    status     TEXT   DEFAULT 'active',
-                    created_at REAL   NOT NULL,
-                    UNIQUE(subject_id, content)
-                );
-            """)
-            # V4的数据迁移：从旧版提取记忆到新版中
-            db.execute("""
-                INSERT OR IGNORE INTO memories (subject_id, source_id, group_id, content, status, created_at)
-                SELECT user_id, user_id, group_id, content, status, timestamp
-                FROM memories_v3_backup
-            """)
+        db.execute("PRAGMA user_version = 4")
 
         # -------------------------------------------------------------
         #  核心索引 — 加速高频查询路径

@@ -41,10 +41,16 @@ def get_by_entities(group_id: str, entity_names: list[str]) -> list[dict]:
         return []
     
     with get_db() as db:
-        placeholders = ",".join("?" * len(entity_names))
+        conditions = []
+        params = [group_id]
+        for name in entity_names:
+            conditions.append("(entity_name LIKE '%' || ? || '%' OR ? LIKE '%' || entity_name || '%')")
+            params.extend([name, name])
+            
+        where_clause = " OR ".join(conditions)
         rows = db.execute(
             f"SELECT entity_name, description FROM world_lore "
-            f"WHERE group_id = ? AND entity_name IN ({placeholders})",
-            (group_id, *entity_names),
+            f"WHERE group_id = ? AND ({where_clause})",
+            params,
         ).fetchall()
         return [dict(r) for r in rows]

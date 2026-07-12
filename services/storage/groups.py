@@ -23,24 +23,16 @@ def upsert(group_id: str, group_name: str = "") -> None:
     """创建或更新群组记录（仅更新 group_name 和 updated_at）。"""
     now = time.time()
     with get_db() as db:
-        row = db.execute(
-            "SELECT group_id FROM groups WHERE group_id = ?",
-            (group_id,),
-        ).fetchone()
-
-        if row:
-            if group_name:
-                db.execute(
-                    "UPDATE groups SET group_name = ?, updated_at = ? "
-                    "WHERE group_id = ?",
-                    (group_name, now, group_id),
-                )
-        else:
-            db.execute(
-                "INSERT INTO groups (group_id, group_name, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?)",
-                (group_id, group_name, now, now),
-            )
+        db.execute(
+            """
+            INSERT INTO groups (group_id, group_name, created_at, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(group_id) DO UPDATE SET
+                group_name = CASE WHEN excluded.group_name != '' THEN excluded.group_name ELSE groups.group_name END,
+                updated_at = excluded.updated_at
+            """,
+            (group_id, group_name, now, now),
+        )
 
 
 def update_vibe(group_id: str, group_vibe: str) -> None:

@@ -20,23 +20,17 @@ def get(group_id: str, user_id: str) -> dict | None:
 def upsert(group_id: str, user_id: str, nickname: str, timestamp: float) -> None:
     """创建或更新用户记录（互动计数 +1）。"""
     with get_db() as db:
-        row = db.execute(
-            "SELECT interaction_count FROM users WHERE group_id = ? AND user_id = ?",
-            (group_id, user_id),
-        ).fetchone()
-
-        if row:
-            db.execute(
-                "UPDATE users SET nickname = ?, interaction_count = ?, last_active_time = ? "
-                "WHERE group_id = ? AND user_id = ?",
-                (nickname, row["interaction_count"] + 1, timestamp, group_id, user_id),
-            )
-        else:
-            db.execute(
-                "INSERT INTO users (user_id, group_id, nickname, interaction_count, last_active_time) "
-                "VALUES (?, ?, ?, 1, ?)",
-                (user_id, group_id, nickname, timestamp),
-            )
+        db.execute(
+            """
+            INSERT INTO users (user_id, group_id, nickname, interaction_count, last_active_time)
+            VALUES (?, ?, ?, 1, ?)
+            ON CONFLICT(user_id, group_id) DO UPDATE SET
+                nickname = excluded.nickname,
+                interaction_count = users.interaction_count + 1,
+                last_active_time = excluded.last_active_time
+            """,
+            (user_id, group_id, nickname, timestamp),
+        )
 
 
 def update_description(group_id: str, user_id: str, description: str) -> None:
