@@ -20,6 +20,7 @@ from services.topic import topic_manager
 logger = get_logger("Scheduler")
 
 _proactive_interval: float = config.topic.proactive_chat_interval_minutes * 60
+_bot_self_id: str = str(config.bot.admin_qq)
 
 
 async def start_scheduler_loop(bot: Bot) -> None:
@@ -106,7 +107,7 @@ async def _loop(bot: Bot) -> None:
                     await adapter.call_api(
                         "send_group_msg", group_id=int(group_id), message=msg,
                     )
-                    topic_manager.add_bot_message(group_id, msg, "bot", "柒槿年")
+                    topic_manager.add_bot_message(group_id, msg, _bot_self_id, config.bot.name)
                     await asyncio.sleep(2)
 
                 logger.info("主动消息已发送 [群%s]: %s", group_id, messages)

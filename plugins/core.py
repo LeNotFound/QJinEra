@@ -220,13 +220,13 @@ class QJinEraPlugin(Plugin):
         if summary:
             topic_manager.update_summary(str(event.group_id), summary)
 
-        bot_id = str(getattr(event, "self_id", "bot"))
+        bot_id = str(getattr(event, "self_id", config.bot.admin_qq))
 
         for msg in messages:
             delay = random.uniform(0.3, 1.2) + len(msg) * 0.05
             await asyncio.sleep(delay)
             await event.reply(msg)
-            topic_manager.add_bot_message(str(event.group_id), msg, bot_id, "柒槿年")
+            topic_manager.add_bot_message(str(event.group_id), msg, bot_id, config.bot.name)
 
     async def _extract_user_memories(self, group_id: str, user_id: str) -> None:
         """从当前话题中提取用户的新事实和群世界观（World Lore）。"""

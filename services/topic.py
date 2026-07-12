@@ -99,10 +99,14 @@ class TopicManager:
 
         for gid in expired:
             topic = self.active_topics[gid]
-            # 找到话题出现过的所有发言者并在后续去除 bot 或者是特定的 nickname，我们在 check 时不直接处理，或者提供一个排除列表
+            # 过滤掉 bot 自身的发言：优先按 user_id 匹配，兜底按 nickname 匹配
+            _bot_uid = str(config.bot.admin_qq)
+            _bot_names = {config.bot.name, config.bot.english_name}
             participants = {
-                msg["user_id"] for msg in topic["messages"] 
-                if msg["user_id"] and msg["nickname"] != "QJinEra" and msg["nickname"] != "柒槿年"
+                msg["user_id"] for msg in topic["messages"]
+                if msg["user_id"]
+                and msg["user_id"] != _bot_uid
+                and msg["nickname"] not in _bot_names
             }
             logger.info("归档群 %s 的过期话题 (ID=%d)", gid, topic["topic_id"])
 
@@ -170,7 +174,7 @@ class TopicManager:
         return self._build_context(group_id, user_id, content, now, bot_id)
 
     def add_bot_message(
-        self, group_id: str, content: str, bot_id: str, nickname: str = "QJinEra",
+        self, group_id: str, content: str, bot_id: str, nickname: str = "",
     ) -> None:
         """记录 Bot 自己发送的消息。"""
         now = time.time()

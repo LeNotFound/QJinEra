@@ -145,6 +145,16 @@ def init_db() -> None:
                 FROM memories_v3_backup
             """)
 
+        # -------------------------------------------------------------
+        #  核心索引 — 加速高频查询路径
+        # -------------------------------------------------------------
+        db.executescript("""
+            CREATE INDEX IF NOT EXISTS idx_messages_topic   ON messages(topic_id, timestamp);
+            CREATE INDEX IF NOT EXISTS idx_topics_group     ON topics(group_id, start_time DESC);
+            CREATE INDEX IF NOT EXISTS idx_memories_subject ON memories(subject_id, status, created_at);
+            CREATE INDEX IF NOT EXISTS idx_decisions_group  ON decision_logs(group_id, timestamp);
+        """)
+
 @contextmanager
 def get_db() -> Generator[sqlite3.Connection, None, None]:
     """获取数据库连接的上下文管理器。自动 commit / rollback / close。
@@ -155,6 +165,9 @@ def get_db() -> Generator[sqlite3.Connection, None, None]:
     """
     conn = sqlite3.connect(_DB_PATH)
     conn.row_factory = sqlite3.Row          # 支持 row["column_name"] 访问
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute("PRAGMA foreign_keys=ON")
     try:
         yield conn
         conn.commit()
