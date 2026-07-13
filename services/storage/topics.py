@@ -42,16 +42,6 @@ def add_message(
         )
 
 
-def get_messages(topic_id: int, limit: int = 50) -> list[dict]:
-    """获取话题下的消息列表。"""
-    with get_db() as db:
-        rows = db.execute(
-            "SELECT user_id, nickname, content, timestamp FROM messages "
-            "WHERE topic_id = ? ORDER BY timestamp DESC LIMIT ?",
-            (topic_id, limit),
-        ).fetchall()
-        return [dict(r) for r in reversed(rows)]
-
 
 def get_recent(group_id: str, limit: int = 5) -> list[dict]:
     """获取最近有摘要的话题列表。"""

@@ -10,6 +10,7 @@ from config import config
 from logger import get_logger, setup_logging, shutdown_logging
 from services.scheduler import start_scheduler_loop
 from services.storage.database import init_db
+from utils import wait_all_tasks
 
 logger = get_logger("Main")
 
@@ -34,6 +35,7 @@ async def main() -> None:
     try:
         await bot.run_async()
     finally:
+        await wait_all_tasks()
         shutdown_logging()
 
 

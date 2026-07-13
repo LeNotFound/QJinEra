@@ -23,12 +23,11 @@ from logger import get_logger
 from services import llm
 from services.storage import decisions, memories as mem_store
 from services.topic import topic_manager
+from utils import spawn_task
 
 logger = get_logger("CorePlugin")
 
-_debounce_seconds: float = config.topic.debounce_seconds
 _judge_model_name: str = config.llm.judge_model
-
 
 class QJinEraPlugin(Plugin):
     # 类级防抖任务表: {group_id: asyncio.Task}
@@ -98,26 +97,14 @@ class QJinEraPlugin(Plugin):
             # 被 @ 时取消该群的防抖，避免双重回复
             self._cancel_debounce(group_id)
             
-            # 只有当旧任务尚未拿到锁(即依然在等待状态)时，才取消它
-            # 避免正在生成或发消息的任务被打断
-            old_at_task = self._at_tasks.get(group_id)
-            if old_at_task and not old_at_task.done():
-                # 判断旧任务是否还在排队（没拿到锁）。由于 _at_respond 在执行前都在 await lock
-                if not self._get_group_lock(group_id).locked():
-                     # 锁是放开的说明它可能正在准备拿锁但还没运行实际逻辑，或者根本不存在等待
-                     pass 
-                else: 
-                     # 如果锁已经被占用，说明上一个任务可能还没拿到，或者是别人拿了。但我们要防止它是在里面。
-                     pass 
-            # 实际上：在 _at_respond 拿到锁后，直接从 _at_tasks 移除了自己！
-            # 这样还在 _at_tasks 里的 task，必然是*没拿到锁*的正处于 await 或 pending 的排队者。
+            # 若已有排队等待处理的 @ 任务，直接取消（只保留最新的）
             old_at_task = self._at_tasks.pop(group_id, None)
             if old_at_task and not old_at_task.done():
                 old_at_task.cancel()
                 
             logger.info("被 @ 提及，直接回复 [群%s]", group_id)
 
-            asyncio.create_task(self._extract_user_memories(group_id, user_id))
+            spawn_task(self._extract_user_memories(group_id, user_id))
             
             # 使用锁避免并发回答
             async def _at_respond():
@@ -192,7 +179,7 @@ class QJinEraPlugin(Plugin):
             if result.get("has_significant_info"):
                 user_id = str(event.user_id)
                 logger.debug("Judge 发现重要信息，提取记忆/世界设定 [群:%s 用户:%s]", group_id, user_id)
-                asyncio.create_task(self._extract_user_memories(group_id, user_id))
+                spawn_task(self._extract_user_memories(group_id, user_id))
 
             # 插话判定（传入当前的上下文）
             if result.get("should_intervene"):
@@ -365,15 +352,15 @@ async def _preprocess_message(raw: str) -> tuple[str, list[str]]:
                         file_path = os.path.join(IMAGE_DIR, f"{file_uuid}.jpg").replace("\\", "/") # 保证存储路径正常
                         
                         # 异步落盘，防止阻塞
-                        async def save_image(path, data):
+                        def save_image(path, data):
                             with open(path, "wb") as f:
                                 f.write(data)
-                        asyncio.create_task(save_image(file_path, image_data))
+                        spawn_task(asyncio.to_thread(save_image, file_path, image_data))
                         
                         images.append(file_path)
                         memory_images.append(b64_data)
             except Exception as e:
-                logger.error(f"下载图片失败 {url}: {e}")
+                logger.error("下载图片失败 %s: %s", url, e)
 
     # 将 raw 中的 CQ:image 替换为特定的 placeholder
     text = raw

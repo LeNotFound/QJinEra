@@ -16,18 +16,18 @@ from logger import get_logger
 from services import llm
 from services.memory_service import consolidate_if_needed, consolidate_group_vibe_task
 from services.topic import topic_manager
+from utils import spawn_task
 
 logger = get_logger("Scheduler")
 
 _proactive_interval: float = config.topic.proactive_chat_interval_minutes * 60
 _bot_self_id: str = str(config.bot.admin_qq)
 
-
 async def start_scheduler_loop(bot: Bot) -> None:
     logger.info("调度器启动，等待适配器就绪...")
     await asyncio.sleep(5)
     await _init_groups(bot)
-    asyncio.create_task(_loop(bot))
+    spawn_task(_loop(bot))
 
 # ------------------------------------------------------------------
 #  初始化
@@ -71,9 +71,9 @@ async def _loop(bot: Bot) -> None:
             pending = topic_manager.check_expired_topics()
             for group_id, participants in pending:
                 for user_id in participants:
-                    asyncio.create_task(consolidate_if_needed(user_id, group_id))
+                    spawn_task(consolidate_if_needed(user_id, group_id))
                 # 群氛围更新（与用户记忆巩固并行）
-                asyncio.create_task(consolidate_group_vibe_task(group_id))
+                spawn_task(consolidate_group_vibe_task(group_id))
         except Exception:
             logger.error("巡检过期话题失败", exc_info=True)
 
@@ -84,6 +84,11 @@ async def _loop(bot: Bot) -> None:
                 continue
             if now - last_time <= _proactive_interval:
                 continue
+
+            current_topic = topic_manager.get_current_topic(group_id)
+            if current_topic and current_topic.get("messages"):
+                if str(current_topic["messages"][-1]["user_id"]) == _bot_self_id:
+                    continue
 
             try:
                 logger.info("群 %s 冷场超过 %d 分钟，主动发起话题",
