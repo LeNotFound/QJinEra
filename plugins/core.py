@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime
 import random
 import re
 import os
@@ -247,8 +248,6 @@ class QJinEraPlugin(Plugin):
         logger.debug("提取围绕用户 %s 展开的记忆与设定...", user_id)
         
         # 传递最近 10 条带身份和格式的消息，好让 LLM 能提取出 source_id 和 subject_id
-        import datetime
-        import json
         recent = []
         for m in msgs[-10:]:
             text_content = m['content']
