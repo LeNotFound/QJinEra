@@ -24,11 +24,6 @@ async def consolidate_if_needed(user_id: str, group_id: str) -> None:
 
     logger.info("触发 Cyber Echo：用户 %s，%d 条事实", user_id, len(active_mem))
 
-    # 清理过期的 short_term 记忆
-    pruned = memories.prune_expired(retention_hours=24)
-    if pruned:
-        logger.debug("清理了 %d 条过期短期记忆", pruned)
-
     # 获取当前用户画像
     user = users.get(group_id, user_id)
     current_desc = (user["description"] if user and user.get("description") else "New user.")

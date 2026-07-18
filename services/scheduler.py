@@ -15,6 +15,7 @@ from config import config
 from logger import get_logger
 from services import llm
 from services.memory_service import consolidate_if_needed, consolidate_group_vibe_task
+from services.storage import memories
 from services.topic import topic_manager
 from utils import spawn_task
 
@@ -66,7 +67,7 @@ async def _loop(bot: Bot) -> None:
     while True:
         await asyncio.sleep(60)
 
-        # 1. 检查过期话题 → 触发 Cyber Echo
+        # 1. 检查过期话题 → 触发 Cyber Echo 及其垃圾回收
         try:
             pending = topic_manager.check_expired_topics()
             for group_id, participants in pending:
@@ -74,6 +75,12 @@ async def _loop(bot: Bot) -> None:
                     spawn_task(consolidate_if_needed(user_id, group_id))
                 # 群氛围更新（与用户记忆巩固并行）
                 spawn_task(consolidate_group_vibe_task(group_id))
+            
+            # 当本轮有话题过期引发 Cyber Echo 时，顺便进行垃圾回收
+            if pending:
+                pruned = memories.prune_expired(retention_hours=24)
+                if pruned:
+                    logger.debug("清理了 %d 条过期短期记忆", pruned)
         except Exception:
             logger.error("巡检过期话题失败", exc_info=True)
 
