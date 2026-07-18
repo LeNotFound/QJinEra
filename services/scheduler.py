@@ -102,6 +102,10 @@ async def _loop(bot: Bot) -> None:
                             group_id, config.topic.proactive_chat_interval_minutes)
 
                 result = await llm.generate_proactive_topic()
+                if result is None:
+                    logger.warning("主动话题生成失败 (API 调用异常)，跳过 [群%s]", group_id)
+                    continue
+
                 messages = result.get("messages", [])
 
                 if not messages:

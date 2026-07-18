@@ -79,6 +79,10 @@ async def consolidate_group_vibe_task(group_id: str) -> None:
             behavior_overlay=behavior_overlay,
             recent_summaries=summaries,
         )
+        if result is None:
+            logger.warning("群画像更新失败 (API 调用异常)，跳过 [群%s]", group_id)
+            return
+
         new_vibe = result.get("group_vibe", "")
         if new_vibe:
             group_store.update_vibe(group_id, new_vibe)

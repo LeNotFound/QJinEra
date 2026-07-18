@@ -165,6 +165,10 @@ class QJinEraPlugin(Plugin):
             logger.debug("防抖结束，咨询 Judge [群%s]", group_id)
             result = await llm.judge_interruption(context)
 
+            if result is None:
+                logger.warning("Judge 判定失败 (API 调用异常)，跳过本次回复 [群%s]", group_id)
+                return
+
             # 记录决策日志
             decisions.add(
                 group_id, _judge_model_name, result,
@@ -210,6 +214,10 @@ class QJinEraPlugin(Plugin):
         
         chat_result = await llm.generate_chat(context)
 
+        if chat_result is None:
+            logger.warning("Writer 生成失败 (API 调用异常)，跳过发送 [群%s]", event.group_id)
+            return
+
         messages = chat_result.get("messages", [])
         summary = chat_result.get("summary")
 
@@ -253,6 +261,10 @@ class QJinEraPlugin(Plugin):
 
         active_memories = mem_store.get_for_context(user_id, limit=20)
         extraction_result = await llm.extract_memories(recent, active_memories)
+
+        if extraction_result is None:
+            logger.warning("记忆提取失败 (API 调用异常)，跳过 [用户%s]", user_id)
+            return
 
         if not isinstance(extraction_result, dict):
             # 兼容旧逻辑

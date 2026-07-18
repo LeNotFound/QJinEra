@@ -126,7 +126,7 @@ async def _call(
                 return json.loads(content) if json_mode else content
     except Exception:
         logger.error("LLM 调用失败 (%s)", model, exc_info=True)
-        return {}
+        return None
 
 
 def _format_ts(ts: float) -> str:
