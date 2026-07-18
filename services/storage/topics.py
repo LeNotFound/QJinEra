@@ -105,7 +105,7 @@ def close_stale(group_id: str, threshold: float) -> int:
                 FROM messages WHERE messages.topic_id = topics.id
             )
             WHERE group_id = ?
-              AND (end_time IS NULL OR end_time = 0)
+              AND end_time IS NULL
               AND (
                   SELECT COALESCE(MAX(timestamp), topics.start_time)
                   FROM messages WHERE messages.topic_id = topics.id
