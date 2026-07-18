@@ -26,7 +26,8 @@ _bot_self_id: str = str(config.bot.admin_qq)
 
 async def start_scheduler_loop(bot: Bot) -> None:
     logger.info("调度器启动，等待适配器就绪...")
-    await asyncio.sleep(5)
+    while not bot.adapters:
+        await asyncio.sleep(1)
     await _init_groups(bot)
     spawn_task(_loop(bot))
 
