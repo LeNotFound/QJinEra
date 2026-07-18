@@ -28,6 +28,15 @@ from utils import spawn_task
 logger = get_logger("CorePlugin")
 
 _judge_model_name: str = config.llm.judge_model
+_debounce_seconds: float = config.bot.debounce_seconds if hasattr(config.bot, "debounce_seconds") else 3.0
+
+_http_client: httpx.AsyncClient | None = None
+
+def _get_http_client() -> httpx.AsyncClient:
+    global _http_client
+    if _http_client is None:
+        _http_client = httpx.AsyncClient()
+    return _http_client
 
 class QJinEraPlugin(Plugin):
     # 类级防抖任务表: {group_id: asyncio.Task}
@@ -343,22 +352,22 @@ async def _preprocess_message(raw: str) -> tuple[str, list[str]]:
                 if not is_gif:
                     # 因为 URL 中可能有些实体被转义，如 &amp; -> &
                     url = url.replace("&amp;", "&")
-                    async with httpx.AsyncClient() as client:
-                        resp = await client.get(url, timeout=10.0)
-                        resp.raise_for_status()
-                        image_data = resp.content
-                        b64_data = base64.b64encode(image_data).decode('utf-8')
-                        file_uuid = str(uuid.uuid4())
-                        file_path = os.path.join(IMAGE_DIR, f"{file_uuid}.jpg").replace("\\", "/") # 保证存储路径正常
-                        
-                        # 异步落盘，防止阻塞
-                        def save_image(path, data):
-                            with open(path, "wb") as f:
-                                f.write(data)
-                        spawn_task(asyncio.to_thread(save_image, file_path, image_data))
-                        
-                        images.append(file_path)
-                        memory_images.append(b64_data)
+                    client = _get_http_client()
+                    resp = await client.get(url, timeout=10.0)
+                    resp.raise_for_status()
+                    image_data = resp.content
+                    b64_data = base64.b64encode(image_data).decode('utf-8')
+                    file_uuid = str(uuid.uuid4())
+                    file_path = os.path.join(IMAGE_DIR, f"{file_uuid}.jpg").replace("\\", "/") # 保证存储路径正常
+                    
+                    # 异步落盘，防止阻塞
+                    def save_image(path, data):
+                        with open(path, "wb") as f:
+                            f.write(data)
+                    spawn_task(asyncio.to_thread(save_image, file_path, image_data))
+                    
+                    images.append(file_path)
+                    memory_images.append(b64_data)
             except Exception as e:
                 logger.error("下载图片失败 %s: %s", url, e)
 
