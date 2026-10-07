@@ -207,7 +207,11 @@ marimo/_lsp/
 __marimo__/
 
 napcat.bat
-qjinera.db
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+qjinera.db*
 run_test.bat
 test_log.txt
 config.toml
