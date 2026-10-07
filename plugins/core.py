@@ -80,16 +80,12 @@ class QJinEraPlugin(Plugin):
         if not topic_manager.is_group_allowed(group_id):
             return
 
-        content, memory_images = await _preprocess_message(str(event.message))
+        content_dict, memory_images = await _preprocess_message(str(event.message))
         nickname = getattr(event.sender, "nickname", "") if hasattr(event, "sender") else ""
 
         bot_id = str(event.self_id)
         
-        try:
-            parsed_content = json.loads(content)
-            text_content = parsed_content.get("text", "")
-        except json.JSONDecodeError:
-            text_content = content
+        text_content = content_dict.get("text", "")
 
         logger.debug("收到消息 [群%s 用户%s]: %s", group_id, user_id, text_content[:50])
         logger.debug("当前 bot_id 为: %s", bot_id)
@@ -100,7 +96,7 @@ class QJinEraPlugin(Plugin):
             return
 
         # 1. 话题管理 & 上下文
-        context = topic_manager.handle_message(group_id, user_id, content, nickname, bot_id, memory_images)
+        context = topic_manager.handle_message(group_id, user_id, content_dict, nickname, bot_id, memory_images)
 
         # 2. @ 检测
         if _is_mentioned(event):
@@ -250,12 +246,8 @@ class QJinEraPlugin(Plugin):
         # 传递最近 10 条带身份和格式的消息，好让 LLM 能提取出 source_id 和 subject_id
         recent = []
         for m in msgs[-10:]:
-            text_content = m['content']
-            try:
-                parsed_content = json.loads(text_content)
-                text_content = parsed_content.get("text", text_content)
-            except (json.JSONDecodeError, TypeError):
-                pass
+            content_val = m['content']
+            text_content = content_val.get("text", "") if isinstance(content_val, dict) else str(content_val)
             recent.append(f"[{datetime.datetime.fromtimestamp(m['timestamp']).strftime('%H:%M:%S')}] {m.get('nickname') or m['user_id']}({m['user_id']}): {text_content}")
 
         active_memories = mem_store.get_for_context(user_id, limit=20)
@@ -308,7 +300,9 @@ class QJinEraPlugin(Plugin):
 IMAGE_DIR = "data/images"
 os.makedirs(IMAGE_DIR, exist_ok=True)
 
-async def _preprocess_message(raw: str) -> tuple[str, list[str]]:
+from typing import Any
+
+async def _preprocess_message(raw: str) -> tuple[dict[str, Any], list[str]]:
     """
     预处理 CQ 码消息，将表情替换为文本标记，提取并下载图片 URL，返回 JSON string 和 memory_images 字典。
     """
@@ -396,7 +390,7 @@ async def _preprocess_message(raw: str) -> tuple[str, list[str]]:
     if images:
         content_dict["images"] = images
     
-    return json.dumps(content_dict, ensure_ascii=False), memory_images
+    return content_dict, memory_images
 
 
 def _is_mentioned(event: GroupMessageEvent) -> bool:

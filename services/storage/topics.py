@@ -30,15 +30,22 @@ def update_summary(topic_id: int, summary: str, end_time: float | None = None) -
             )
 
 
+import json
+
 def add_message(
-    topic_id: int, user_id: str, content: str, timestamp: float, nickname: str = "",
+    topic_id: int, user_id: str, content: dict | str, timestamp: float, nickname: str = "",
 ) -> None:
     """记录一条消息。"""
+    if isinstance(content, dict):
+        content_str = json.dumps(content, ensure_ascii=False)
+    else:
+        content_str = content
+        
     with get_db() as db:
         db.execute(
             "INSERT INTO messages (topic_id, user_id, nickname, content, timestamp) "
             "VALUES (?, ?, ?, ?, ?)",
-            (topic_id, user_id, nickname, content, timestamp),
+            (topic_id, user_id, nickname, content_str, timestamp),
         )
 
 
@@ -74,7 +81,20 @@ def get_latest_active(group_id: str) -> dict | None:
             (topic_id,),
         ).fetchall()
 
-        msg_list = [dict(m) for m in messages]
+        msg_list = []
+        for m in messages:
+            m_dict = dict(m)
+            raw_content = m_dict["content"]
+            try:
+                parsed = json.loads(raw_content)
+                if isinstance(parsed, dict) and "text" in parsed:
+                    m_dict["content"] = parsed
+                else:
+                    m_dict["content"] = {"text": raw_content}
+            except Exception:
+                m_dict["content"] = {"text": raw_content}
+            msg_list.append(m_dict)
+            
         return {
             "topic_id": topic_id,
             "start_time": row["start_time"],

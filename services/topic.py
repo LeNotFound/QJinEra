@@ -131,9 +131,12 @@ class TopicManager:
     # ------------------------------------------------------------------
 
     def handle_message(
-        self, group_id: str, user_id: str, content: str, nickname: str = "", bot_id: str = "", memory_images: list[str] = None
+        self, group_id: str, user_id: str, content: dict | str, nickname: str = "", bot_id: str = "", memory_images: list[str] = None
     ) -> dict[str, Any] | None:
         """处理新消息：更新话题、构建上下文。"""
+        if isinstance(content, str):
+            content = {"text": content}
+            
         if not self.is_group_allowed(group_id):
             return None
 
@@ -178,9 +181,12 @@ class TopicManager:
         return self._build_context(group_id, user_id, content, now, bot_id)
 
     def add_bot_message(
-        self, group_id: str, content: str, bot_id: str, nickname: str = "",
+        self, group_id: str, content: dict | str, bot_id: str, nickname: str = "",
     ) -> None:
         """记录 Bot 自己发送的消息。"""
+        if isinstance(content, str):
+            content = {"text": content}
+            
         now = time.time()
 
         self._ensure_topic_loaded(group_id)
@@ -296,7 +302,7 @@ class TopicManager:
             del self.active_topics[group_id]
 
     def _build_context(
-        self, group_id: str, user_id: str, content: str, now: float, bot_id: str = "",
+        self, group_id: str, user_id: str, content: dict | str, now: float, bot_id: str = "",
     ) -> dict[str, Any]:
         """构建传递给 LLM 的上下文字典。"""
         topic = self.active_topics[group_id]
@@ -316,7 +322,6 @@ class TopicManager:
                     break
 
         import datetime
-        import json
         import os
         import base64
 
@@ -326,23 +331,21 @@ class TopicManager:
             timestamp_str = datetime.datetime.fromtimestamp(m['timestamp']).strftime('%H:%M:%S')
             speaker = m.get('nickname') or m['user_id']
             
-            text = m['content']
-            try:
-                content_dict = json.loads(text)
-                if isinstance(content_dict, dict) and "text" in content_dict:
-                    text = content_dict["text"]
-                    if "images" in content_dict:
-                        if m.get("memory_images"):
-                            # 快车道：直接从当次内存中拿
-                            recent_images.extend(m["memory_images"])
-                        else:
-                            # 历史数据：从磁盘读取图片为 Base64
-                            for img_path in content_dict["images"]:
-                                if os.path.exists(img_path):
-                                    with open(img_path, "rb") as f:
-                                        recent_images.append(base64.b64encode(f.read()).decode('utf-8'))
-            except (json.JSONDecodeError, TypeError):
-                pass
+            content_val = m['content']
+            if isinstance(content_val, dict):
+                text = content_val.get("text", "")
+                if "images" in content_val:
+                    if m.get("memory_images"):
+                        # 快车道：直接从当次内存中拿
+                        recent_images.extend(m["memory_images"])
+                    else:
+                        # 历史数据：从磁盘读取图片为 Base64
+                        for img_path in content_val["images"]:
+                            if os.path.exists(img_path):
+                                with open(img_path, "rb") as f:
+                                    recent_images.append(base64.b64encode(f.read()).decode('utf-8'))
+            else:
+                text = str(content_val)
             
             recent.append(f"[{timestamp_str}] {speaker}: {text}")
 
@@ -384,7 +387,7 @@ class TopicManager:
             "past_topics": past_summary,
             "user_profile": user_desc,
             "user_memories": memory_section,
-            "latest_message": content,
+            "latest_message": content.get("text", "") if isinstance(content, dict) else str(content),
             "time_since_last_group_message": time_since_group,
             "time_since_last_user_message": time_since_user,
             "is_at_mentioned": False,           # 由 plugin 覆盖
