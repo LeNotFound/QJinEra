@@ -138,7 +138,8 @@ def get_metrics():
         conn.close()
         return total_decisions, active_topics, intervention_rate
     except Exception:
-        if conn: conn.close()
+        if conn:
+            conn.close()
         return 0, 0, "0%"
 
 # --- Header ---
@@ -209,7 +210,7 @@ else:
                 
                 # Expander for context
                 if row['context_summary']:
-                     with st.expander(f"📜 上下文"):
+                     with st.expander("📜 上下文"):
                         st.caption(row['context_summary'])
                         
         except Exception as e:
@@ -243,14 +244,14 @@ else:
         try:
             df_users = pd.read_sql_query("SELECT nickname as '昵称', interaction_count as '互动' FROM users ORDER BY interaction_count DESC LIMIT 10", conn)
             st.dataframe(df_users, hide_index=True, use_container_width=True)
-        except:
+        except Exception:
             st.text("暂无数据")
             
         st.subheader("💬 近期话题")
         try:
             df_topics = pd.read_sql_query("SELECT summary as '摘要' FROM topics WHERE summary IS NOT NULL ORDER BY id DESC LIMIT 8", conn)
             st.dataframe(df_topics, hide_index=True, use_container_width=True)
-        except:
+        except Exception:
             st.text("暂无数据")
 
     conn.close()

@@ -7,10 +7,10 @@ import time
 from services.storage.database import get_db
 
 
-def add(group_id: str, judge_model: str, result: dict, context_summary: str = "") -> None:
+async def add(group_id: str, judge_model: str, result: dict, context_summary: str = "") -> None:
     """记录一次 Judge 模型的决策。"""
-    with get_db() as db:
-        db.execute(
+    async with get_db() as db:
+        await db.execute(
             "INSERT INTO decision_logs "
             "(group_id, timestamp, judge_model, should_intervene, trigger_level, reason, context_summary) "
             "VALUES (?, ?, ?, ?, ?, ?, ?)",

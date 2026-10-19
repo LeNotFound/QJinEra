@@ -161,21 +161,42 @@ async def generate_chat(context: dict[str, Any]) -> dict[str, Any]:
     # 提取给 Jinja 的变量，避免未定义错误
     ctx = context.copy()
     user_profile = ctx.pop("user_profile_raw", {}) or {}
-    world_lore = ctx.pop("world_lore", []) or []
+    world_lore = ctx.pop("world_lore", None) or {}
     group_context = ctx.pop("group_context", None) or {}
     recent_images = ctx.pop("recent_images", [])
 
-    # 目前 Life Engine 进度还在 Phase 2 的 DDL 阶段，所以暂时写死一个默认的兜底字典
-    bot_status = {"energy": 100.0, "mood": "平静"}
-    
+    bot_status = ctx.pop("bot_status", None) or {"energy": 100.0, "mood": "平静"}
+    if isinstance(bot_status, dict):
+        bot_status = bot_status.copy()
+    else:
+        bot_status = dict(bot_status)
+
+    intervention_reason = ctx.pop("intervention_reason", "")
+    circuit_breaker_directive = ctx.pop("circuit_breaker_directive", "")
+    focus_user = ctx.pop("focus_user", bot_status.get("focus_user", ""))
+    empathy_mood = ctx.pop("empathy_mood", bot_status.get("empathy_mood", ""))
+    cur_objective = ctx.pop("cur_objective", bot_status.get("cur_objective", ""))
+
+    if focus_user and not bot_status.get("focus_user"):
+        bot_status["focus_user"] = focus_user
+    if empathy_mood and not bot_status.get("empathy_mood"):
+        bot_status["empathy_mood"] = empathy_mood
+    if cur_objective and not bot_status.get("cur_objective"):
+        bot_status["cur_objective"] = cur_objective
+
     system_prompt = chat_template.render(
         persona=_persona_data,
         bot_status=bot_status,
         user_profile=user_profile,
         world_lore=world_lore,
         group_context=group_context,
+        intervention_reason=intervention_reason,
+        circuit_breaker_directive=circuit_breaker_directive,
+        focus_user=focus_user,
+        empathy_mood=empathy_mood,
+        cur_objective=cur_objective,
     )
-    
+
     return await _call(
         _chat_model,
         system_prompt,

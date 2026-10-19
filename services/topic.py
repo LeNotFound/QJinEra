@@ -16,7 +16,7 @@ from typing import Any
 from config import config
 from logger import get_logger
 from models.message import MessageContent
-from services.storage import memories, topics, users, groups as group_store
+from services.storage import groups as group_store, memories, topics, users
 
 logger = get_logger("TopicManager")
 
@@ -39,8 +39,6 @@ class TopicManager:
         # {group_id: last_activity_timestamp}
         self.group_last_activity: dict[str, float] = {}
 
-        self._restore_active_topics()
-
     # ------------------------------------------------------------------
     #  群组白名单
     # ------------------------------------------------------------------
@@ -55,22 +53,22 @@ class TopicManager:
     #  启动恢复
     # ------------------------------------------------------------------
 
-    def _restore_active_topics(self) -> None:
+    async def restore_active_topics(self) -> None:
         """从数据库恢复活跃话题，清理过期话题。"""
         now = time.time()
         threshold = now - _topic_gap
 
-        for gid in topics.get_all_known_groups():
+        for gid in await topics.get_all_known_groups():
             if not self.is_group_allowed(gid):
                 continue
 
             # 关闭所有过期话题
-            closed = topics.close_stale(gid, threshold)
+            closed = await topics.close_stale(gid, threshold)
             if closed:
                 logger.info("启动清理：关闭群 %s 的 %d 个过期话题", gid, closed)
 
             # 尝试恢复最新的活跃话题
-            topic = topics.get_latest_active(gid)
+            topic = await topics.get_latest_active(gid)
             if not topic:
                 continue
 
@@ -85,7 +83,7 @@ class TopicManager:
     #  话题过期检查（由 scheduler 定期调用）
     # ------------------------------------------------------------------
 
-    def check_expired_topics(self) -> list[tuple[str, set[str]]]:
+    async def check_expired_topics(self) -> list[tuple[str, set[str]]]:
         """检查并归档过期话题。
 
         Returns:
@@ -113,7 +111,7 @@ class TopicManager:
             }
             logger.info("归档群 %s 的过期话题 (ID=%d)", gid, topic["topic_id"])
 
-            topics.update_summary(
+            await topics.update_summary(
                 topic["topic_id"],
                 topic.get("summary"),
                 topic["last_msg_time"],
@@ -129,7 +127,7 @@ class TopicManager:
     #  消息处理
     # ------------------------------------------------------------------
 
-    def handle_message(
+    async def handle_message(
         self,
         group_id: str,
         user_id: str,
@@ -145,9 +143,9 @@ class TopicManager:
             return None
 
         now = time.time()
-        users.upsert(group_id, user_id, nickname, now)
+        await users.upsert(group_id, user_id, nickname, now)
 
-        self._ensure_topic_loaded(group_id)
+        await self._ensure_topic_loaded(group_id)
         current = self.active_topics.get(group_id)
 
         # 判断是否需要新话题
@@ -155,8 +153,8 @@ class TopicManager:
 
         if need_new:
             if current is not None:
-                self._archive_topic_sync(group_id)
-            topic_id = topics.create(group_id, now)
+                await self._archive_topic_sync(group_id)
+            topic_id = await topics.create(group_id, now)
             current = {
                 "topic_id": topic_id,
                 "last_msg_time": now,
@@ -179,12 +177,12 @@ class TopicManager:
 
         current["messages"].append(msg_obj)
 
-        topics.add_message(current["topic_id"], user_id, content_obj, now, nickname)
+        await topics.add_message(current["topic_id"], user_id, content_obj, now, nickname)
         self.group_last_activity[group_id] = now
 
-        return self._build_context(group_id, user_id, content_obj, now, bot_id)
+        return await self._build_context(group_id, user_id, content_obj, now, bot_id)
 
-    def add_bot_message(
+    async def add_bot_message(
         self,
         group_id: str,
         content: MessageContent | dict | str | None,
@@ -196,11 +194,11 @@ class TopicManager:
 
         now = time.time()
 
-        self._ensure_topic_loaded(group_id)
+        await self._ensure_topic_loaded(group_id)
         current = self.active_topics.get(group_id)
 
         if current is None:
-            topic_id = topics.create(group_id, now)
+            topic_id = await topics.create(group_id, now)
             current = {
                 "topic_id": topic_id,
                 "last_msg_time": now,
@@ -216,41 +214,41 @@ class TopicManager:
             "content": content_obj,
             "timestamp": now,
         })
-        topics.add_message(current["topic_id"], bot_id, content_obj, now, nickname)
+        await topics.add_message(current["topic_id"], bot_id, content_obj, now, nickname)
         self.group_last_activity[group_id] = now
 
     # ------------------------------------------------------------------
     #  上下文 & 摘要
     # ------------------------------------------------------------------
 
-    def get_latest_context(self, group_id: str, bot_id: str = "") -> dict[str, Any] | None:
+    async def get_latest_context(self, group_id: str, bot_id: str = "") -> dict[str, Any] | None:
         """获取群组的最新上下文（debounce 后重新取）。"""
         if not self.is_group_allowed(group_id):
             return None
 
-        self._ensure_topic_loaded(group_id)
+        await self._ensure_topic_loaded(group_id)
         topic = self.active_topics.get(group_id)
         if not topic or not topic["messages"]:
             return None
 
         last_msg = topic["messages"][-1]
-        return self._build_context(
+        return await self._build_context(
             group_id, last_msg["user_id"], last_msg["content"], last_msg["timestamp"], bot_id
         )
 
-    def get_current_topic(self, group_id: str) -> dict | None:
+    async def get_current_topic(self, group_id: str) -> dict | None:
         if not self.is_group_allowed(group_id):
             return None
-        self._ensure_topic_loaded(group_id)
+        await self._ensure_topic_loaded(group_id)
         return self.active_topics.get(group_id)
 
-    def update_summary(self, group_id: str, summary: str) -> None:
+    async def update_summary(self, group_id: str, summary: str) -> None:
         topic = self.active_topics.get(group_id)
         if topic:
             topic["summary"] = summary
-            topics.update_summary(topic["topic_id"], summary)
+            await topics.update_summary(topic["topic_id"], summary)
 
-    def switch_topic(self, group_id: str) -> None:
+    async def switch_topic(self, group_id: str) -> None:
         """话题转变：归档旧话题，创建新话题，将最新消息迁移过去。"""
         old = self.active_topics.get(group_id)
         if not old:
@@ -260,14 +258,14 @@ class TopicManager:
         last_msg = old["messages"][-1] if old["messages"] else None
 
         # 归档旧话题
-        topics.update_summary(
+        await topics.update_summary(
             old["topic_id"], old.get("summary"), old["last_msg_time"],
         )
         logger.info("归档话题 ID=%d [群%s]: %s", old["topic_id"], group_id, old.get("summary", ""))
 
         # 创建新话题
         now = time.time()
-        new_id = topics.create(group_id, now)
+        new_id = await topics.create(group_id, now)
         new_topic = {
             "topic_id": new_id,
             "last_msg_time": now,
@@ -278,7 +276,7 @@ class TopicManager:
         # 迁移最新消息到新话题
         if last_msg:
             new_topic["messages"].append(last_msg)
-            topics.add_message(
+            await topics.add_message(
                 new_id, last_msg["user_id"], last_msg["content"],
                 last_msg["timestamp"], last_msg.get("nickname", ""),
             )
@@ -290,25 +288,25 @@ class TopicManager:
     #  私有方法
     # ------------------------------------------------------------------
 
-    def _ensure_topic_loaded(self, group_id: str) -> None:
+    async def _ensure_topic_loaded(self, group_id: str) -> None:
         """如果内存中没有该群的话题，尝试从数据库恢复。"""
         if group_id in self.active_topics:
             return
-        topic = topics.get_latest_active(group_id)
+        topic = await topics.get_latest_active(group_id)
         if topic and time.time() - topic["last_msg_time"] <= _topic_gap:
             self.active_topics[group_id] = topic
             self.group_last_activity[group_id] = topic["last_msg_time"]
 
-    def _archive_topic_sync(self, group_id: str) -> None:
+    async def _archive_topic_sync(self, group_id: str) -> None:
         """同步归档话题（不触发 Cyber Echo，仅持久化）。"""
         topic = self.active_topics.get(group_id)
         if topic:
-            topics.update_summary(
+            await topics.update_summary(
                 topic["topic_id"], topic.get("summary"), topic["last_msg_time"],
             )
             del self.active_topics[group_id]
 
-    def _build_context(
+    async def _build_context(
         self,
         group_id: str,
         user_id: str,
@@ -319,8 +317,6 @@ class TopicManager:
         """构建传递给 LLM 的上下文字典。"""
         topic = self.active_topics[group_id]
         msgs = topic["messages"]
-
-        # 尝试从某处获取 bot 的信息，虽然没有直接传入 self_id，我们通过配置或其他方式在外部拿到，但既然我们要改 prompt 我们应该让 context 知道 bot 的身份
 
         # 时间间隔计算
         time_since_group = 0.0
@@ -355,33 +351,31 @@ class TopicManager:
             recent.append(f"[{timestamp_str}] {speaker}: {text}")
 
         # 历史话题摘要
-        past = topics.get_recent(group_id, limit=5)
+        past = await topics.get_recent(group_id, limit=5)
         past_summary = "\n".join(f"- {t['summary']}" for t in past if t["summary"])
 
-        # 用户特征（新增 intimacy_score 和 relationship_stage）
-        user_profile = users.get(group_id, user_id)
+        # 用户特征（包含 dynamic_status 和 current_mood）
+        user_profile = await users.get(group_id, user_id)
         user_desc = ""
         if user_profile and user_profile.get("description"):
             user_desc = f"Current Speaker ({user_profile['nickname']}): {user_profile['description']}"
 
         # 用户记忆
-        user_memories = memories.get_for_context(user_id, limit=20)
+        user_memories = await memories.get_for_context(user_id, limit=20)
         memory_section = ""
         if user_memories:
             memory_section = "User Memories:\n" + "\n".join(f"- {m}" for m in user_memories)
 
-        # Bot 自身的记忆 (在 V4 设计中，Extractor 会将关于 Bot 自身的事实也剥离出来，subject_id = bot_id)
+        # Bot 自身的记忆
         if bot_id:
-            bot_memories = memories.get_for_context(bot_id, limit=20)
+            bot_memories = await memories.get_for_context(bot_id, limit=20)
             if bot_memories:
                 if memory_section:
                     memory_section += "\n\n"
                 memory_section += "Bot's Own Recent Memories:\n" + "\n".join(f"- {m}" for m in bot_memories)
 
-        # 这里其实也应该返回 user_profile, 以便在外部 inject 给 chat_system.jinja
-
         # 群组上下文
-        group_info = group_store.get(group_id)
+        group_info = await group_store.get(group_id)
 
         latest_text = MessageContent.from_raw(content).text
 

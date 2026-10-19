@@ -10,6 +10,7 @@ from config import config
 from logger import get_logger, setup_logging, shutdown_logging
 from services.scheduler import start_scheduler_loop
 from services.storage.database import init_db
+from services.topic import topic_manager
 from utils import wait_all_tasks
 
 logger = get_logger("Main")
@@ -20,9 +21,10 @@ async def main() -> None:
     setup_logging(level=config.log.level, log_dir=config.log.log_dir)
     logger.info("启动 %s (%s) ...", config.bot.name, config.bot.english_name)
 
-    # 2. 初始化数据库
-    init_db()
+    # 2. 初始化数据库与恢复话题
+    await init_db()
     logger.info("数据库就绪: %s", config.storage.database_file)
+    await topic_manager.restore_active_topics()
 
     # 3. 启动 AliceBot
     bot = Bot()

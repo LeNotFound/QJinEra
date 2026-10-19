@@ -17,7 +17,7 @@ logger = get_logger("MemoryService")
 
 async def consolidate_if_needed(user_id: str, group_id: str) -> None:
     """检查是否满足巩固条件，满足则执行 Cyber Echo。"""
-    active_mem = memories.get_active_details(user_id, group_id)
+    active_mem = await memories.get_active_details(user_id, group_id)
 
     if len(active_mem) < 3:
         return
@@ -25,7 +25,7 @@ async def consolidate_if_needed(user_id: str, group_id: str) -> None:
     logger.info("触发 Cyber Echo：用户 %s，%d 条事实", user_id, len(active_mem))
 
     # 获取当前用户画像
-    user = users.get(group_id, user_id)
+    user = await users.get(group_id, user_id)
     current_desc = (user["description"] if user and user.get("description") else "New user.")
 
     # 调用 LLM 巩固
@@ -37,19 +37,19 @@ async def consolidate_if_needed(user_id: str, group_id: str) -> None:
     # 更新用户画像
     new_desc = result.get("new_description")
     if new_desc:
-        users.update_description(group_id, user_id, new_desc)
+        await users.update_description(group_id, user_id, new_desc)
         logger.info("✅ 更新用户 %s 的画像", user_id)
 
     # 归档已巩固的记忆
     consolidated_ids = _safe_int_list(result.get("consolidated_ids", []))
     if consolidated_ids:
-        memories.update_status(consolidated_ids, "archived")
+        await memories.update_status(consolidated_ids, "archived")
         logger.info("🗄️ 归档 %d 条巩固事实", len(consolidated_ids))
 
     # 琐碎记忆 → short_term
     discarded_ids = _safe_int_list(result.get("discarded_ids", []))
     if discarded_ids:
-        memories.update_status(discarded_ids, "short_term")
+        await memories.update_status(discarded_ids, "short_term")
         logger.info("🕰️ %d 条事实移至短期存储", len(discarded_ids))
 
     # keep_active_ids 无需处理，状态保持 active
@@ -57,13 +57,13 @@ async def consolidate_if_needed(user_id: str, group_id: str) -> None:
 
 async def consolidate_group_vibe_task(group_id: str) -> None:
     """Cyber Echo 群画像更新：从最近话题摘要沉淀群氛围印象。"""
-    group_info = group_store.get(group_id)
+    group_info = await group_store.get(group_id)
     if not group_info:
         logger.debug("群 %s 不在 groups 表中，跳过群画像更新", group_id)
         return
 
     # 获取最近有摘要的话题（最多 10 条）
-    recent = topics.get_recent(group_id, limit=10)
+    recent = await topics.get_recent(group_id, limit=10)
     summaries = [t["summary"] for t in recent if t.get("summary")]
 
     if not summaries:
@@ -85,7 +85,7 @@ async def consolidate_group_vibe_task(group_id: str) -> None:
 
         new_vibe = result.get("group_vibe", "")
         if new_vibe:
-            group_store.update_vibe(group_id, new_vibe)
+            await group_store.update_vibe(group_id, new_vibe)
             logger.info("✅ 更新群 %s 的氛围画像: %s", group_id, new_vibe[:50])
     except Exception:
         logger.error("群画像更新失败 [群%s]", group_id, exc_info=True)
@@ -98,5 +98,5 @@ def _safe_int_list(raw: list) -> list[int]:
         try:
             result.append(int(item))
         except (ValueError, TypeError):
-            pass
+            continue
     return result

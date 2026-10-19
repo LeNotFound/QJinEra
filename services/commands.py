@@ -35,7 +35,7 @@ def register_command(name: str):
 async def _cmd_clear(event: Any, args: str) -> None:
     """清空当前群聊话题的短期上下文。"""
     group_id = str(event.group_id)
-    topic_manager.switch_topic(group_id)
+    await topic_manager.switch_topic(group_id)
     await event.reply("已清空当前群聊话题的短期上下文。")
     logger.info("群 %s 执行 /clear 命令，已切换并重置话题短期上下文", group_id)
 

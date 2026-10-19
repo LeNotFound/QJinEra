@@ -17,30 +17,31 @@ from services.storage import database, topics
 
 
 @pytest.fixture(autouse=True)
-def setup_test_db(tmp_path, monkeypatch):
+async def setup_test_db(tmp_path, monkeypatch):
     test_db = tmp_path / "test_edge_cases.db"
     monkeypatch.setattr(database, "_DB_PATH", str(test_db))
-    database.init_db()
+    await database.init_db()
     yield test_db
 
 
-def test_corrupt_and_legacy_db_content():
+@pytest.mark.asyncio
+async def test_corrupt_and_legacy_db_content():
     now = time.time()
-    t_id = topics.create("3003", now)
+    t_id = await topics.create("3003", now)
 
     # 1. Plain non-json string in database
-    topics.add_message(t_id, "u1", "plain legacy string", now, "LegacyUser")
+    await topics.add_message(t_id, "u1", "plain legacy string", now, "LegacyUser")
 
     # 2. Legacy json string without images key
-    topics.add_message(t_id, "u2", '{"text": "legacy json text"}', now, "JsonUser")
+    await topics.add_message(t_id, "u2", '{"text": "legacy json text"}', now, "JsonUser")
 
     # 3. Malformed json
-    topics.add_message(t_id, "u3", '{"text": incomplete json', now, "MalformedUser")
+    await topics.add_message(t_id, "u3", '{"text": incomplete json', now, "MalformedUser")
 
     # 4. Null content in database
-    topics.add_message(t_id, "u4", None, now, "NullUser")
+    await topics.add_message(t_id, "u4", None, now, "NullUser")
 
-    active = topics.get_latest_active("3003")
+    active = await topics.get_latest_active("3003")
     assert active is not None
     assert len(active["messages"]) == 4
 
@@ -132,7 +133,7 @@ async def test_command_case_and_whitespace():
     event.group_id = "555"
     event.reply = AsyncMock()
 
-    with patch("services.topic.topic_manager.switch_topic") as mock_switch:
+    with patch("services.topic.topic_manager.switch_topic", new_callable=AsyncMock) as mock_switch:
         # Uppercase /CLEAR
         assert await handle_command(event, MessageContent(text="/CLEAR")) is True
         mock_switch.assert_called_with("555")

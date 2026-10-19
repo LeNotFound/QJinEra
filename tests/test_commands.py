@@ -41,7 +41,7 @@ async def test_clear_command():
     event = MockEvent(group_id="999888")
     content = MessageContent(text="/clear")
 
-    with patch("services.topic.topic_manager.switch_topic") as mock_switch:
+    with patch("services.topic.topic_manager.switch_topic", new_callable=AsyncMock) as mock_switch:
         result = await handle_command(event, content)
         assert result is True
         mock_switch.assert_called_once_with("999888")
@@ -83,7 +83,7 @@ async def test_command_without_slash_in_decorator():
 async def test_command_with_at_prefix_and_fullwidth():
     event = MockEvent(group_id="111222")
 
-    with patch("services.topic.topic_manager.switch_topic") as mock_switch:
+    with patch("services.topic.topic_manager.switch_topic", new_callable=AsyncMock) as mock_switch:
         # Preceded by @ mention
         assert await handle_command(event, "[@123456] /clear") is True
         mock_switch.assert_called_with("111222")

@@ -18,23 +18,24 @@ from services.topic import TopicManager
 
 
 @pytest.fixture(autouse=True)
-def setup_test_db(tmp_path, monkeypatch):
+async def setup_test_db(tmp_path, monkeypatch):
     test_db = tmp_path / "test_qjinera.db"
     monkeypatch.setattr(database, "_DB_PATH", str(test_db))
     # Initialize DB schema
-    database.init_db()
+    await database.init_db()
     yield test_db
 
 
-def test_storage_topics_message_content():
+@pytest.mark.asyncio
+async def test_storage_topics_message_content():
     now = time.time()
-    t_id = topics.create("1001", now)
+    t_id = await topics.create("1001", now)
     assert t_id > 0
 
     mc = MessageContent(text="Hello from storage test", images=["img1.jpg"])
-    topics.add_message(t_id, "user_123", mc, now, "TestUser")
+    await topics.add_message(t_id, "user_123", mc, now, "TestUser")
 
-    active_topic = topics.get_latest_active("1001")
+    active_topic = await topics.get_latest_active("1001")
     assert active_topic is not None
     assert active_topic["topic_id"] == t_id
     assert len(active_topic["messages"]) == 1
@@ -47,7 +48,8 @@ def test_storage_topics_message_content():
     assert msg["content"].images == ["img1.jpg"]
 
 
-def test_topic_manager_pipeline():
+@pytest.mark.asyncio
+async def test_topic_manager_pipeline():
     with patch("services.topic.TopicManager.is_group_allowed", return_value=True):
         tm = TopicManager()
         group_id = "2002"
@@ -55,23 +57,23 @@ def test_topic_manager_pipeline():
         bot_id = "bot_999"
 
         mc = MessageContent(text="Topic manager pipeline test")
-        ctx = tm.handle_message(group_id, user_id, mc, "Alice", bot_id)
+        ctx = await tm.handle_message(group_id, user_id, mc, "Alice", bot_id)
         assert ctx is not None
         assert ctx["latest_message"] == "Topic manager pipeline test"
         assert len(ctx["recent_messages"]) == 1
         assert "Alice: Topic manager pipeline test" in ctx["recent_messages"][0]
 
         # Add bot message
-        tm.add_bot_message(group_id, "Bot response text", bot_id, "QJinEra")
-        current = tm.get_current_topic(group_id)
+        await tm.add_bot_message(group_id, "Bot response text", bot_id, "QJinEra")
+        current = await tm.get_current_topic(group_id)
         assert current is not None
         assert len(current["messages"]) == 2
         assert isinstance(current["messages"][-1]["content"], MessageContent)
         assert current["messages"][-1]["content"].text == "Bot response text"
 
         # Switch topic
-        tm.switch_topic(group_id)
-        new_topic = tm.get_current_topic(group_id)
+        await tm.switch_topic(group_id)
+        new_topic = await tm.get_current_topic(group_id)
         assert new_topic is not None
         assert new_topic["topic_id"] != current["topic_id"]
         # The last message is migrated to the new topic
@@ -103,7 +105,7 @@ async def test_core_plugin_command_interception():
     plugin._at_tasks["12345"] = mock_at
 
     with patch("services.topic.topic_manager.is_group_allowed", return_value=True), \
-         patch("services.topic.topic_manager.switch_topic") as mock_switch:
+         patch("services.topic.topic_manager.switch_topic", new_callable=AsyncMock) as mock_switch:
         await plugin.handle()
         mock_switch.assert_called_once_with("12345")
         event.reply.assert_called_once_with("已清空当前群聊话题的短期上下文。")

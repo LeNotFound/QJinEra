@@ -25,8 +25,33 @@
 【自我感知与关系状态 (Cyber Sensing)】
 - 你当前的体力值 (Energy)：{{ bot_status.energy | default(100) }}/100。
 - 你当前的心情 (Mood)：{{ bot_status.mood | default('平静') }}。
+{% if bot_status.empathy_mood or empathy_mood %}
+- 此时你内在的共情情绪 (Empathy Mood)：{{ bot_status.empathy_mood | default(empathy_mood) }}。
+{% endif %}
+{% if bot_status.cur_objective or cur_objective %}
+- 你的潜意识当前目标 (Objective)：{{ bot_status.cur_objective | default(cur_objective) }}。
+{% endif %}
+{% if bot_status.focus_user or focus_user %}
+- 当前专注锁定对象：用户 {{ bot_status.focus_user | default(focus_user) }}。
+{% endif %}
+{% if intervention_reason %}
+- 潜意识研判指引 (Judge Insight)：{{ intervention_reason }}
+{% endif %}
+{% if user_profile %}
 - 此时与你对话的用户的亲密度 (Intimacy Score)：{{ user_profile.intimacy_score | default('暂无') }}，关系阶段：{{ user_profile.relationship_stage | default('Stranger') }}。
+{% if user_profile.current_mood %}
+- 对方当前的心理状态：{{ user_profile.current_mood }}。
+{% endif %}
+{% if user_profile.dynamic_status %}
+- 对方当前的动态体征：{{ user_profile.dynamic_status }}。
+{% endif %}
+{% endif %}
 - **指示**：{{ persona.custom.status_behavior | default('请根据你的状态微调你的回复语气。') }}
+
+{% if circuit_breaker_directive %}
+【危机断路器最高指令 (Circuit Breaker)】
+{{ circuit_breaker_directive }}
+{% endif %}
 
 {% if group_context %}
 【当前群组氛围 (Group Context)】
@@ -41,7 +66,24 @@
 {% endif %}
 {% endif %}
 
-{% if world_lore %}
+{% if world_lore is mapping and (world_lore.exact or world_lore.fuzzy) %}
+【群组设定与专属记忆 (World Lore)】
+你们的语境中可能涉及以下设定的提及，这是你们专有的信息：
+
+{% if world_lore.exact %}
+> 高度相关（明确提及）：
+{% for lore in world_lore.exact %}
+- [{{ lore.entity_name }}]: {{ lore.description }}
+{% endfor %}
+{% endif %}
+
+{% if world_lore.fuzzy %}
+> 潜在相关（供你参考，如果你的上下文判断发现它们并非用户意指，请无视）：
+{% for lore in world_lore.fuzzy %}
+- [{{ lore.entity_name }}]: {{ lore.description }}
+{% endfor %}
+{% endif %}
+{% elif world_lore is not mapping and world_lore %}
 【群组世界观与共享设定 (World Lore)】
 你们的聊天语境中可能涉及以下已知的实体或设定，请在对话时参考这些共有常识，不要表现得一无所知：
 {% for lore in world_lore %}

@@ -14,7 +14,7 @@ from alicebot import Bot
 from config import config
 from logger import get_logger
 from services import llm
-from services.memory_service import consolidate_if_needed, consolidate_group_vibe_task
+from services.memory_service import consolidate_group_vibe_task, consolidate_if_needed
 from services.storage import groups as group_store, memories
 from services.topic import topic_manager
 from utils import spawn_task
@@ -74,7 +74,7 @@ async def _init_groups(bot: Bot) -> bool:
             if not topic_manager.is_group_allowed(gid):
                 continue
             # 初始化群组到 groups 表（新群自动以 public 初始化）
-            group_store.upsert(gid, group_name)
+            await group_store.upsert(gid, group_name)
             if gid not in topic_manager.group_last_activity:
                 topic_manager.group_last_activity[gid] = now
                 logger.info("发现群 %s (%s)，初始化计时器", gid, group_name)
@@ -90,8 +90,9 @@ async def _init_groups(bot: Bot) -> bool:
 
 async def _loop(bot: Bot) -> None:
     """每分钟执行一次巡检。"""
-    while True:
-        await asyncio.sleep(60)
+    try:
+        while True:
+            await asyncio.sleep(60)
 
         # 0. 若启动时 WebSocket 未就绪，连接建立后自动重试初始化群列表
         if not _groups_initialized:
@@ -99,16 +100,16 @@ async def _loop(bot: Bot) -> None:
 
         # 1. 检查过期话题 → 触发 Cyber Echo 及其垃圾回收
         try:
-            pending = topic_manager.check_expired_topics()
+            pending = await topic_manager.check_expired_topics()
             for group_id, participants in pending:
                 for user_id in participants:
                     spawn_task(consolidate_if_needed(user_id, group_id))
                 # 群氛围更新（与用户记忆巩固并行）
                 spawn_task(consolidate_group_vibe_task(group_id))
-            
+
             # 当本轮有话题过期引发 Cyber Echo 时，顺便进行垃圾回收
             if pending:
-                pruned = memories.prune_expired(retention_hours=24)
+                pruned = await memories.prune_expired(retention_hours=24)
                 if pruned:
                     logger.debug("清理了 %d 条过期短期记忆", pruned)
         except Exception:
@@ -122,7 +123,7 @@ async def _loop(bot: Bot) -> None:
             if now - last_time <= _proactive_interval:
                 continue
 
-            current_topic = topic_manager.get_current_topic(group_id)
+            current_topic = await topic_manager.get_current_topic(group_id)
             if current_topic and current_topic.get("messages"):
                 if str(current_topic["messages"][-1]["user_id"]) == _bot_self_id:
                     continue
@@ -153,13 +154,15 @@ async def _loop(bot: Bot) -> None:
                     await adapter.call_api(
                         "send_group_msg", group_id=int(group_id), message=msg,
                     )
-                    topic_manager.add_bot_message(group_id, msg, _bot_self_id, config.bot.name)
+                    await topic_manager.add_bot_message(group_id, msg, _bot_self_id, config.bot.name)
                     await asyncio.sleep(2)
 
                 logger.info("主动消息已发送 [群%s]: %s", group_id, messages)
 
             except Exception:
                 logger.error("主动聊天失败 [群%s]", group_id, exc_info=True)
+    except asyncio.CancelledError:
+        logger.debug("巡检循环收到终止信号，已安全退出")
 
 
 # ------------------------------------------------------------------

@@ -6,6 +6,7 @@
 - 并发锁管理与防抖调度
 - 预处理协调、命令拦截与主流程编排
 - Judge 判定、Writer 生成与记忆提取
+- 心智接力与危机断路器 (Circuit Breaker)
 """
 
 from __future__ import annotations
@@ -23,7 +24,13 @@ from models.message import MessageContent
 from services import llm
 from services.commands import handle_command
 from services.message_preprocessor import is_mentioned, preprocess_message
-from services.storage import decisions, memories as mem_store, world_lore
+from services.storage import (
+    bot_status as bot_status_store,
+    decisions,
+    memories as mem_store,
+    users as user_store,
+    world_lore,
+)
 from services.topic import topic_manager
 from utils import spawn_task
 
@@ -88,7 +95,7 @@ class QJinEraPlugin(Plugin):
             return
 
         # 1. 话题管理 & 上下文
-        topic_manager.handle_message(group_id, user_id, content, nickname, bot_id, memory_images)
+        await topic_manager.handle_message(group_id, user_id, content, nickname, bot_id, memory_images)
 
         # 2. @ 检测
         if is_mentioned(event):
@@ -111,7 +118,7 @@ class QJinEraPlugin(Plugin):
                     if self._at_tasks.get(group_id) == asyncio.current_task():
                         self._at_tasks.pop(group_id, None)
 
-                    latest_ctx = topic_manager.get_latest_context(group_id, bot_id)
+                    latest_ctx = await topic_manager.get_latest_context(group_id, bot_id)
                     if latest_ctx:
                         latest_ctx["is_at_mentioned"] = True
                         await self._respond(latest_ctx, event)
@@ -144,7 +151,7 @@ class QJinEraPlugin(Plugin):
 
         async with self._get_group_lock(group_id):
             bot_id = str(event.self_id)
-            context = topic_manager.get_latest_context(group_id, bot_id)
+            context = await topic_manager.get_latest_context(group_id, bot_id)
             if not context:
                 return
 
@@ -155,11 +162,65 @@ class QJinEraPlugin(Plugin):
                 logger.warning("Judge 判定失败 (API 调用异常)，跳过本次回复 [群%s]", group_id)
                 return
 
+            trigger_level = result.get("trigger_level", "none")
+            reason = result.get("reason", "")
+            state_updates = result.get("state_updates") or {}
+
             # 记录决策日志
-            decisions.add(
+            await decisions.add(
                 group_id, _judge_model_name, result,
                 context.get("topic_summary", ""),
             )
+
+            # 心智接力：更新 bot_status 高维状态
+            bot_updates = {}
+            for field in [
+                "empathy_mood",
+                "cur_objective",
+                "focus_user",
+                "current_activity",
+                "loneliness",
+                "dopamine",
+                "active_concerns",
+            ]:
+                if field in state_updates and state_updates[field] is not None:
+                    bot_updates[field] = state_updates[field]
+            if bot_updates:
+                await bot_status_store.update_state(bot_id, **bot_updates)
+
+            # 更新 users 表当前发言用户画像
+            user_id = str(event.user_id)
+            u_dynamic = state_updates.get("user_dynamic_status")
+            u_mood = state_updates.get("user_mood")
+            if u_dynamic or u_mood:
+                await user_store.update_status_and_mood(
+                    group_id, user_id, dynamic_status=u_dynamic, current_mood=u_mood
+                )
+
+            # 同步更新当前上下文中的用户画像快照，确保 Writer 实时感知到最新的心理状态和动态体征
+            if not isinstance(context.get("user_profile_raw"), dict):
+                context["user_profile_raw"] = {}
+            if u_dynamic:
+                context["user_profile_raw"]["dynamic_status"] = u_dynamic
+            if u_mood:
+                context["user_profile_raw"]["current_mood"] = u_mood
+
+            # 将潜意识研判、共情情绪、当前目标与锁定对象存入上下文向下游传递
+            context["intervention_reason"] = reason
+            context["trigger_level"] = trigger_level
+            if state_updates.get("empathy_mood"):
+                context["empathy_mood"] = state_updates["empathy_mood"]
+            if state_updates.get("cur_objective"):
+                context["cur_objective"] = state_updates["cur_objective"]
+            if state_updates.get("focus_user"):
+                context["focus_user"] = state_updates["focus_user"]
+
+            # 危机断路器 (Circuit Breaker)
+            if trigger_level == "crisis":
+                logger.warning("🚨 触发危机断路器 (Circuit Breaker) [群%s 用户%s]！", group_id, user_id)
+                context["circuit_breaker_directive"] = (
+                    "[系统指令：用户极度脆弱，回复绝不超30字，纯粹托底，不要建议，禁止道德绑架，禁止说教]"
+                )
 
             # 记录 world_lore (Phase 3)
             entities = result.get("mentioned_entities", [])
@@ -169,20 +230,33 @@ class QJinEraPlugin(Plugin):
             # 话题转变感知
             if result.get("topic_shifted"):
                 logger.info("Judge 感知话题转变 [群%s]，归档旧话题并创建新话题", group_id)
-                topic_manager.switch_topic(group_id)
-                context = topic_manager.get_latest_context(group_id, bot_id)
-                if not context:
+                await topic_manager.switch_topic(group_id)
+                new_ctx = await topic_manager.get_latest_context(group_id, bot_id)
+                if not new_ctx:
                     return
+                # 迁移心智及上下文数据
+                for k in [
+                    "intervention_reason",
+                    "trigger_level",
+                    "empathy_mood",
+                    "cur_objective",
+                    "focus_user",
+                    "circuit_breaker_directive",
+                    "mentioned_entities",
+                    "user_profile_raw",
+                ]:
+                    if k in context:
+                        new_ctx[k] = context[k]
+                context = new_ctx
 
             # 记忆提取信号
             if result.get("has_significant_info"):
-                user_id = str(event.user_id)
                 logger.debug("Judge 发现重要信息，提取记忆/世界设定 [群:%s 用户:%s]", group_id, user_id)
                 spawn_task(self._extract_user_memories(group_id, user_id))
 
             # 插话判定（传入当前的上下文）
-            if result.get("should_intervene"):
-                logger.info("Judge 判定：插话 [群%s] 原因: %s", group_id, result.get("reason", ""))
+            if result.get("should_intervene") or trigger_level == "crisis":
+                logger.info("Judge 判定：插话 [群%s] 级别: %s 原因: %s", group_id, trigger_level, reason)
                 await self._respond(context, event)
             else:
                 logger.debug("Judge 判定：沉默 [群%s]", group_id)
@@ -190,11 +264,25 @@ class QJinEraPlugin(Plugin):
     async def _respond(self, context: dict, event: GroupMessageEvent) -> None:
         """调用 Writer 模型生成回复并发送。"""
         context["should_return_summary"] = True
+        bot_id = str(event.self_id)
+
+        # 注入 bot_status 高维心智
+        bot_st = await bot_status_store.get(bot_id)
+        if not bot_st:
+            bot_st = {"bot_id": bot_id, "energy": 100.0, "mood": "平静"}
+        # 如果 context 中有 Judge 实时更新的情绪/目标/专注用户，同步体现
+        if context.get("empathy_mood"):
+            bot_st["empathy_mood"] = context["empathy_mood"]
+        if context.get("cur_objective"):
+            bot_st["cur_objective"] = context["cur_objective"]
+        if context.get("focus_user"):
+            bot_st["focus_user"] = context["focus_user"]
+        context["bot_status"] = bot_st
 
         # [Phase 3] 从 context 提取实体，并去 world_lore 表查数据给 Chat Writer
         entities = context.get("mentioned_entities")
         if entities:
-            lores = world_lore.get_by_entities(str(event.group_id), entities)
+            lores = await world_lore.get_by_entities(str(event.group_id), entities)
             context["world_lore"] = lores
 
         chat_result = await llm.generate_chat(context)
@@ -207,19 +295,22 @@ class QJinEraPlugin(Plugin):
         summary = chat_result.get("summary")
 
         if summary:
-            topic_manager.update_summary(str(event.group_id), summary)
+            await topic_manager.update_summary(str(event.group_id), summary)
 
-        bot_id = str(event.self_id)
+        # 危机模式安全防护：如果处于 crisis 断路器状态，严格限制回复条数以防多条轰炸，且减少打字延迟
+        is_crisis = context.get("trigger_level") == "crisis"
+        if is_crisis and messages:
+            messages = messages[:1]
 
         for msg in messages:
-            delay = random.uniform(0.3, 1.2) + len(msg) * 0.05
+            delay = 0.2 if is_crisis else (random.uniform(0.3, 1.2) + len(msg) * 0.05)
             await asyncio.sleep(delay)
             await event.reply(msg)
-            topic_manager.add_bot_message(str(event.group_id), msg, bot_id, config.bot.name)
+            await topic_manager.add_bot_message(str(event.group_id), msg, bot_id, config.bot.name)
 
     async def _extract_user_memories(self, group_id: str, user_id: str) -> None:
         """从当前话题中提取用户的新事实和群世界观（World Lore）。"""
-        topic = topic_manager.get_current_topic(group_id)
+        topic = await topic_manager.get_current_topic(group_id)
         if not topic:
             return
 
@@ -239,7 +330,7 @@ class QJinEraPlugin(Plugin):
                 f"{m.get('nickname') or m['user_id']}({m['user_id']}): {text_content}"
             )
 
-        active_memories = mem_store.get_for_context(user_id, limit=20)
+        active_memories = await mem_store.get_for_context(user_id, limit=20)
         extraction_result = await llm.extract_memories(recent, active_memories)
 
         if not extraction_result:
@@ -256,14 +347,19 @@ class QJinEraPlugin(Plugin):
             if "source_id" not in fact_dict:
                 fact_dict["source_id"] = user_id
 
-            mem_store.add(user_id, group_id, fact_dict)
-            logger.info("+ 事实: %s [涉及对象:%s, 来源:%s]", fact_dict["content"], fact_dict["subject_id"], fact_dict["source_id"])
+            await mem_store.add(user_id, group_id, fact_dict)
+            logger.info(
+                "+ 事实: %s [涉及对象:%s, 来源:%s]",
+                fact_dict["content"],
+                fact_dict["subject_id"],
+                fact_dict["source_id"],
+            )
 
         for lore in lores:
             name = lore.get("entity_name")
             desc = lore.get("description")
             if name and desc:
-                world_lore.add_or_update(group_id, user_id, name, desc)
+                await world_lore.add_or_update(group_id, user_id, name, desc)
                 logger.info("+ 世界观: [%s] %s [提供者%s]", name, desc, user_id)
 
     # ------------------------------------------------------------------
