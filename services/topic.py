@@ -15,6 +15,7 @@ from typing import Any
 
 from config import config
 from logger import get_logger
+from models.message import MessageContent
 from services.storage import memories, topics, users, groups as group_store
 
 logger = get_logger("TopicManager")
@@ -129,12 +130,17 @@ class TopicManager:
     # ------------------------------------------------------------------
 
     def handle_message(
-        self, group_id: str, user_id: str, content: dict | str, nickname: str = "", bot_id: str = "", memory_images: list[str] = None
+        self,
+        group_id: str,
+        user_id: str,
+        content: MessageContent | dict | str | None,
+        nickname: str = "",
+        bot_id: str = "",
+        memory_images: list[str] | None = None,
     ) -> dict[str, Any] | None:
         """处理新消息：更新话题、构建上下文。"""
-        if isinstance(content, str):
-            content = {"text": content}
-            
+        content_obj = MessageContent.from_raw(content)
+
         if not self.is_group_allowed(group_id):
             return None
 
@@ -161,30 +167,33 @@ class TopicManager:
 
         # 追加消息
         current["last_msg_time"] = now
-        
+
         msg_obj = {
             "user_id": user_id,
             "nickname": nickname,
-            "content": content,
+            "content": content_obj,
             "timestamp": now,
         }
         if memory_images:
             msg_obj["memory_images"] = memory_images
-            
+
         current["messages"].append(msg_obj)
-        
-        topics.add_message(current["topic_id"], user_id, content, now, nickname)
+
+        topics.add_message(current["topic_id"], user_id, content_obj, now, nickname)
         self.group_last_activity[group_id] = now
 
-        return self._build_context(group_id, user_id, content, now, bot_id)
+        return self._build_context(group_id, user_id, content_obj, now, bot_id)
 
     def add_bot_message(
-        self, group_id: str, content: dict | str, bot_id: str, nickname: str = "",
+        self,
+        group_id: str,
+        content: MessageContent | dict | str | None,
+        bot_id: str,
+        nickname: str = "",
     ) -> None:
         """记录 Bot 自己发送的消息。"""
-        if isinstance(content, str):
-            content = {"text": content}
-            
+        content_obj = MessageContent.from_raw(content)
+
         now = time.time()
 
         self._ensure_topic_loaded(group_id)
@@ -204,10 +213,10 @@ class TopicManager:
         current["messages"].append({
             "user_id": bot_id,
             "nickname": nickname,
-            "content": content,
+            "content": content_obj,
             "timestamp": now,
         })
-        topics.add_message(current["topic_id"], bot_id, content, now, nickname)
+        topics.add_message(current["topic_id"], bot_id, content_obj, now, nickname)
         self.group_last_activity[group_id] = now
 
     # ------------------------------------------------------------------
@@ -300,14 +309,19 @@ class TopicManager:
             del self.active_topics[group_id]
 
     def _build_context(
-        self, group_id: str, user_id: str, content: dict | str, now: float, bot_id: str = "",
+        self,
+        group_id: str,
+        user_id: str,
+        content: MessageContent | dict | str | None,
+        now: float,
+        bot_id: str = "",
     ) -> dict[str, Any]:
         """构建传递给 LLM 的上下文字典。"""
         topic = self.active_topics[group_id]
         msgs = topic["messages"]
 
         # 尝试从某处获取 bot 的信息，虽然没有直接传入 self_id，我们通过配置或其他方式在外部拿到，但既然我们要改 prompt 我们应该让 context 知道 bot 的身份
-        
+
         # 时间间隔计算
         time_since_group = 0.0
         time_since_user = 9999.0
@@ -324,20 +338,20 @@ class TopicManager:
         for m in msgs[-10:]:
             timestamp_str = datetime.datetime.fromtimestamp(m['timestamp']).strftime('%H:%M:%S')
             speaker = m.get('nickname') or m['user_id']
-            
-            content_val = m['content']
-            text = content_val.get("text", "")
-            if "images" in content_val:
+
+            content_val = MessageContent.from_raw(m['content'])
+            text = content_val.text
+            if content_val.images:
                 if m.get("memory_images"):
                     # 快车道：直接从当次内存中拿
                     recent_images.extend(m["memory_images"])
                 else:
                     # 历史数据：从磁盘读取图片为 Base64
-                    for img_path in content_val["images"]:
+                    for img_path in content_val.images:
                         if os.path.exists(img_path):
                             with open(img_path, "rb") as f:
                                 recent_images.append(base64.b64encode(f.read()).decode('utf-8'))
-            
+
             recent.append(f"[{timestamp_str}] {speaker}: {text}")
 
         # 历史话题摘要
@@ -355,7 +369,7 @@ class TopicManager:
         memory_section = ""
         if user_memories:
             memory_section = "User Memories:\n" + "\n".join(f"- {m}" for m in user_memories)
-            
+
         # Bot 自身的记忆 (在 V4 设计中，Extractor 会将关于 Bot 自身的事实也剥离出来，subject_id = bot_id)
         if bot_id:
             bot_memories = memories.get_for_context(bot_id, limit=20)
@@ -369,7 +383,7 @@ class TopicManager:
         # 群组上下文
         group_info = group_store.get(group_id)
 
-        latest_text = content.get("text", "") if isinstance(content, dict) else str(content)
+        latest_text = MessageContent.from_raw(content).text
 
         return {
             "bot_id": bot_id,

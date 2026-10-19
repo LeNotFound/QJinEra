@@ -23,24 +23,47 @@ logger = get_logger("Scheduler")
 
 _proactive_interval: float = config.topic.proactive_chat_interval_minutes * 60
 _bot_self_id: str = str(config.bot.admin_qq)
+_groups_initialized: bool = False
+
+
+def _get_ready_adapter(bot: Bot):
+    """获取第一个处于活动连接状态的适配器（需确保 WebSocket 已建立）。"""
+    if not bot.adapters:
+        return None
+    adapter = bot.adapters[0]
+    ws = getattr(adapter, "websocket", None)
+    if ws is None or getattr(ws, "closed", False):
+        return None
+    return adapter
+
 
 async def start_scheduler_loop(bot: Bot) -> None:
-    logger.info("调度器启动，等待适配器就绪...")
-    while not bot.adapters:
+    logger.info("调度器启动，等待适配器连接就绪...")
+    # 轮询等待 WebSocket 连接真正建立（最多等待 60 秒）
+    for _ in range(60):
+        if _get_ready_adapter(bot):
+            break
         await asyncio.sleep(1)
+    else:
+        logger.warning("未检测到活动的 WebSocket 连接（NapCat 可能尚未启动），群列表将在连接建立后自动加载")
+
     await _init_groups(bot)
     spawn_task(_loop(bot))
+
 
 # ------------------------------------------------------------------
 #  初始化
 # ------------------------------------------------------------------
 
-async def _init_groups(bot: Bot) -> None:
+async def _init_groups(bot: Bot) -> bool:
     """从 adapter 获取群列表，初始化活动时间。"""
-    adapter = _get_adapter(bot)
+    global _groups_initialized
+    if _groups_initialized:
+        return True
+
+    adapter = _get_ready_adapter(bot)
     if not adapter:
-        logger.warning("未找到适配器，跳过群组初始化")
-        return
+        return False
 
     try:
         groups = await adapter.call_api("get_group_list")
@@ -55,8 +78,11 @@ async def _init_groups(bot: Bot) -> None:
             if gid not in topic_manager.group_last_activity:
                 topic_manager.group_last_activity[gid] = now
                 logger.info("发现群 %s (%s)，初始化计时器", gid, group_name)
-    except Exception:
-        logger.error("获取群列表失败", exc_info=True)
+        _groups_initialized = True
+        return True
+    except (AssertionError, Exception) as e:
+        logger.warning("获取群列表失败 (网络或适配器未就绪: %s)", e)
+        return False
 
 # ------------------------------------------------------------------
 #  主循环
@@ -66,6 +92,10 @@ async def _loop(bot: Bot) -> None:
     """每分钟执行一次巡检。"""
     while True:
         await asyncio.sleep(60)
+
+        # 0. 若启动时 WebSocket 未就绪，连接建立后自动重试初始化群列表
+        if not _groups_initialized:
+            await _init_groups(bot)
 
         # 1. 检查过期话题 → 触发 Cyber Echo 及其垃圾回收
         try:
@@ -114,9 +144,9 @@ async def _loop(bot: Bot) -> None:
                 # 先更新时间，避免重复触发
                 topic_manager.group_last_activity[group_id] = now
 
-                adapter = _get_adapter(bot)
+                adapter = _get_ready_adapter(bot)
                 if not adapter:
-                    logger.warning("发送主动消息失败：未找到适配器")
+                    logger.warning("发送主动消息失败：适配器未处于连接就绪状态")
                     continue
 
                 for msg in messages:
@@ -131,10 +161,11 @@ async def _loop(bot: Bot) -> None:
             except Exception:
                 logger.error("主动聊天失败 [群%s]", group_id, exc_info=True)
 
+
 # ------------------------------------------------------------------
 #  工具方法
 # ------------------------------------------------------------------
 
 def _get_adapter(bot: Bot):
-    """获取第一个可用的适配器。"""
-    return bot.adapters[0] if bot.adapters else None
+    """获取第一个处于活动连接状态的适配器。"""
+    return _get_ready_adapter(bot)

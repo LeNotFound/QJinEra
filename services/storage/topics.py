@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 from services.storage.database import get_db
+from models.message import MessageContent
 
 
 def create(group_id: str, start_time: float) -> int:
@@ -33,14 +34,22 @@ def update_summary(topic_id: int, summary: str, end_time: float | None = None) -
 
 
 def add_message(
-    topic_id: int, user_id: str, content: dict | str, timestamp: float, nickname: str = "",
+    topic_id: int,
+    user_id: str,
+    content: MessageContent | dict | str | None,
+    timestamp: float,
+    nickname: str = "",
 ) -> None:
     """记录一条消息。"""
-    if isinstance(content, dict):
+    if isinstance(content, MessageContent):
+        content_str = content.to_json()
+    elif isinstance(content, dict):
         content_str = json.dumps(content, ensure_ascii=False)
+    elif content is None:
+        content_str = ""
     else:
-        content_str = content
-        
+        content_str = str(content)
+
     with get_db() as db:
         db.execute(
             "INSERT INTO messages (topic_id, user_id, nickname, content, timestamp) "
@@ -85,14 +94,7 @@ def get_latest_active(group_id: str) -> dict | None:
         for m in messages:
             m_dict = dict(m)
             raw_content = m_dict["content"]
-            try:
-                parsed = json.loads(raw_content)
-                if isinstance(parsed, dict) and "text" in parsed:
-                    m_dict["content"] = parsed
-                else:
-                    m_dict["content"] = {"text": raw_content}
-            except Exception:
-                m_dict["content"] = {"text": raw_content}
+            m_dict["content"] = MessageContent.from_json(raw_content)
             msg_list.append(m_dict)
             
         return {
