@@ -15,7 +15,7 @@ from config import config
 from logger import get_logger
 from services import llm
 from services.memory_service import consolidate_if_needed, consolidate_group_vibe_task
-from services.storage import memories
+from services.storage import groups as group_store, memories
 from services.topic import topic_manager
 from utils import spawn_task
 
@@ -51,7 +51,6 @@ async def _init_groups(bot: Bot) -> None:
             if not topic_manager.is_group_allowed(gid):
                 continue
             # 初始化群组到 groups 表（新群自动以 public 初始化）
-            from services.storage import groups as group_store
             group_store.upsert(gid, group_name)
             if gid not in topic_manager.group_last_activity:
                 topic_manager.group_last_activity[gid] = now

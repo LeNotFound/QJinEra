@@ -1,0 +1,33 @@
+[project]
+name = "qjinera"
+version = "0.5.0"
+description = "基于 AliceBot 与 NapCat 的通用 QQ 群聊角色机器人框架"
+requires-python = ">=3.11"
+license = "MIT"
+readme = "README.md"
+
+dependencies = [
+    "alicebot[all]",
+    "openai>=1.0.0",
+    "pydantic>=2.0.0",
+    "jinja2",
+    "httpx",
+    "tenacity",
+]
+
+[project.optional-dependencies]
+dashboard = [
+    "streamlit",
+    "pandas",
+]
+
+[tool.uv]
+package = false
+dev-dependencies = [
+    "pytest",
+    "pytest-asyncio",
+]
+
+[[tool.uv.index]]
+url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
+default = true

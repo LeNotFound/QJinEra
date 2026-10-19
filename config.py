@@ -13,7 +13,10 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import tomli
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib
 from pydantic import BaseModel, ConfigDict
 
 
@@ -117,7 +120,7 @@ def load_config(path: str = "config.toml") -> AppConfig:
         sys.exit(1)
 
     with open(config_path, "rb") as f:
-        raw = tomli.load(f)
+        raw = tomllib.load(f)
 
     return AppConfig(
         bot=raw.get("bot", {}),

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from services.storage.database import get_db
 
 
@@ -29,8 +31,6 @@ def update_summary(topic_id: int, summary: str, end_time: float | None = None) -
                 (summary, topic_id),
             )
 
-
-import json
 
 def add_message(
     topic_id: int, user_id: str, content: dict | str, timestamp: float, nickname: str = "",

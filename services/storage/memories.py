@@ -11,9 +11,7 @@ def add(user_id: str, group_id: str, fact: dict[str, str]) -> None:
     """添加一条新记忆（status='active'）。重复内容自动忽略。"""
     subject_id = str(fact.get("subject_id", user_id))
     source_id = str(fact.get("source_id", user_id))
-    content = fact.get("content", "")
-    if not isinstance(content, str):
-        content = str(content)
+    content = str(fact.get("content", ""))
 
     with get_db() as db:
         db.execute(

@@ -7,10 +7,8 @@
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import datetime
-import json
 import os
 import time
 from typing import Any
@@ -321,10 +319,6 @@ class TopicManager:
                     time_since_user = now - msg["timestamp"]
                     break
 
-        import datetime
-        import os
-        import base64
-
         recent = []
         recent_images = []
         for m in msgs[-10:]:
@@ -332,20 +326,17 @@ class TopicManager:
             speaker = m.get('nickname') or m['user_id']
             
             content_val = m['content']
-            if isinstance(content_val, dict):
-                text = content_val.get("text", "")
-                if "images" in content_val:
-                    if m.get("memory_images"):
-                        # 快车道：直接从当次内存中拿
-                        recent_images.extend(m["memory_images"])
-                    else:
-                        # 历史数据：从磁盘读取图片为 Base64
-                        for img_path in content_val["images"]:
-                            if os.path.exists(img_path):
-                                with open(img_path, "rb") as f:
-                                    recent_images.append(base64.b64encode(f.read()).decode('utf-8'))
-            else:
-                text = str(content_val)
+            text = content_val.get("text", "")
+            if "images" in content_val:
+                if m.get("memory_images"):
+                    # 快车道：直接从当次内存中拿
+                    recent_images.extend(m["memory_images"])
+                else:
+                    # 历史数据：从磁盘读取图片为 Base64
+                    for img_path in content_val["images"]:
+                        if os.path.exists(img_path):
+                            with open(img_path, "rb") as f:
+                                recent_images.append(base64.b64encode(f.read()).decode('utf-8'))
             
             recent.append(f"[{timestamp_str}] {speaker}: {text}")
 
@@ -378,6 +369,8 @@ class TopicManager:
         # 群组上下文
         group_info = group_store.get(group_id)
 
+        latest_text = content.get("text", "") if isinstance(content, dict) else str(content)
+
         return {
             "bot_id": bot_id,
             "group_context": group_info,
@@ -387,7 +380,7 @@ class TopicManager:
             "past_topics": past_summary,
             "user_profile": user_desc,
             "user_memories": memory_section,
-            "latest_message": content.get("text", "") if isinstance(content, dict) else str(content),
+            "latest_message": latest_text,
             "time_since_last_group_message": time_since_group,
             "time_since_last_user_message": time_since_user,
             "is_at_mentioned": False,           # 由 plugin 覆盖

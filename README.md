@@ -44,40 +44,44 @@
 
 ### 1. 环境准备
 
-确保已安装 Python 3.10+。
+确保已安装 Python 3.11+ 和 [uv](https://github.com/astral-sh/uv)。
 
 ```bash
 git clone https://github.com/LeNotFound/QJinEra.git
 cd QJinEra
 ```
 
-### 2. 安装依赖
+### 2. 安装依赖 (使用 uv)
 
 ```bash
-pip install -r requirements.txt
+# 同步核心依赖
+uv sync
+
+# 若需要 Streamlit Dashboard，可一并安装可选依赖
+uv sync --extra dashboard
 ```
 
 ### 3. 配置
 
-1.  复制示例配置：
-    ```bash
-    cp example.config.toml config.toml
-    ```
-2.  编辑 `config.toml`，填入你的 LLM API Key (支持 OpenAI 格式，推荐 Gemini Flash 系列)：
-    ```toml
-    [llm]
-    api_base = "..."
-    api_key = "sk-..."
-    # 推荐配置
-    judge_model = "gemini-2.5-flash-lite"  # 判官（快且便宜）
-    chat_model = "gemini-2.5-flash"        # 写手（高智商）
-    ```
-3.  确保 **NapCat** (OneBot v11) 正在运行，WS 地址默认为 `ws://127.0.0.1:3001`。
+1. 复制示例配置：
+   ```bash
+   cp example.config.toml config.toml
+   ```
+2. 编辑 `config.toml`，填入你的 LLM API Key (支持 OpenAI 格式，推荐 Gemini Flash 系列)：
+   ```toml
+   [llm]
+   api_base = "..."
+   api_key = "sk-..."
+   # 推荐配置
+   judge_model = "gemini-2.5-flash-lite"  # 判官（快且便宜）
+   chat_model = "gemini-2.5-flash"        # 写手（高智商）
+   ```
+3. 确保 **NapCat** (OneBot v11) 正在运行，WS 地址默认为 `ws://127.0.0.1:3001`。
 
 ### 4. 运行 Bot
 
 ```bash
-python main.py
+uv run python main.py
 ```
 
 ### 5. 启动监控面板 (Dashboard)
@@ -85,7 +89,7 @@ python main.py
 在新的终端窗口运行：
 
 ```bash
-streamlit run dashboard.py
+uv run streamlit run dashboard.py
 ```
 打开浏览器访问 `http://localhost:8501`，开启顶部的 **Auto Refresh** 开关即可。
 
@@ -95,22 +99,24 @@ streamlit run dashboard.py
 
 ```text
 QJinEra/
+├── pyproject.toml        # 现代 Python 依赖与项目配置 (uv)
+├── uv.lock               # 依赖锁定文件
 ├── config.toml           # 核心配置文件 (Prompt, API, 阈值)
 ├── main.py               # Bot 启动入口
 ├── dashboard.py          # Streamlit 监控面板
 ├── plugins/              # AliceBot 插件
-│   ├── core.py           # [核心] 消息流处理与模型调度
-│   └── scheduler.py      # [定时] 主动话题与记忆任务
-├── prompts/              # [新] Jinja2 动态提示词系统
+│   └── core.py           # [核心] 消息流处理、防抖与模型调度
+├── prompts/              # Jinja2 动态提示词与人设 (UPEX)
 ├── services/             # 业务服务层
-│   ├── storage/          # [新] 模块化数据库操作表组件
+│   ├── storage/          # 模块化数据库操作表组件
 │   │   ├── users.py      # 用户状态与亲密度
 │   │   ├── world_lore.py # 专有名词感知
 │   │   └── ...           # 其他存取逻辑
 │   ├── llm.py            # LLM 接口封装
 │   ├── topic.py          # 话题与上下文管理
-│   └── memory_service.py # 记忆巩固服务
-└── docs/                 # 文档
+│   ├── scheduler.py      # [定时] 巡检、主动话题与记忆任务
+│   └── memory_service.py # 记忆巩固服务 (Cyber Echo)
+└── docs/                 # 设计文档与演进路线
 ```
 
 ## 📝 开发计划

@@ -7,29 +7,31 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import datetime
+import html
+import os
 import random
 import re
-import os
 import uuid
-import base64
-import json
-import httpx
+from typing import Any
 
+import httpx
 from alicebot import Plugin
 from alicebot.adapter.cqhttp.event import GroupMessageEvent
 
 from config import config
 from logger import get_logger
 from services import llm
-from services.storage import decisions, memories as mem_store
+from services.cq_faces import get_face_text
+from services.storage import decisions, memories as mem_store, world_lore
 from services.topic import topic_manager
 from utils import spawn_task
 
 logger = get_logger("CorePlugin")
 
 _judge_model_name: str = config.llm.judge_model
-_debounce_seconds: float = config.bot.debounce_seconds if hasattr(config.bot, "debounce_seconds") else 3.0
+_debounce_seconds: float = config.topic.debounce_seconds
 
 _http_client: httpx.AsyncClient | None = None
 
@@ -81,7 +83,7 @@ class QJinEraPlugin(Plugin):
             return
 
         content_dict, memory_images = await _preprocess_message(str(event.message))
-        nickname = getattr(event.sender, "nickname", "") if hasattr(event, "sender") else ""
+        nickname = getattr(getattr(event, "sender", None), "nickname", "") or ""
 
         bot_id = str(event.self_id)
         
@@ -96,7 +98,7 @@ class QJinEraPlugin(Plugin):
             return
 
         # 1. 话题管理 & 上下文
-        context = topic_manager.handle_message(group_id, user_id, content_dict, nickname, bot_id, memory_images)
+        topic_manager.handle_message(group_id, user_id, content_dict, nickname, bot_id, memory_images)
 
         # 2. @ 检测
         if _is_mentioned(event):
@@ -114,18 +116,15 @@ class QJinEraPlugin(Plugin):
             
             # 使用锁避免并发回答
             async def _at_respond():
-                try:
-                    async with self._get_group_lock(group_id):
-                        # 一旦进入临界区，本任务就不再是“排队中的候选被打断者”，移出字典
-                        if self._at_tasks.get(group_id) == asyncio.current_task():
-                             self._at_tasks.pop(group_id, None)
+                async with self._get_group_lock(group_id):
+                    # 一旦进入临界区，本任务就不再是“排队中的候选被打断者”，移出字典
+                    if self._at_tasks.get(group_id) == asyncio.current_task():
+                        self._at_tasks.pop(group_id, None)
 
-                        latest_ctx = topic_manager.get_latest_context(group_id, bot_id) 
-                        if latest_ctx:
-                            latest_ctx["is_at_mentioned"] = True
-                            await self._respond(latest_ctx, event)
-                finally:
-                    pass
+                    latest_ctx = topic_manager.get_latest_context(group_id, bot_id) 
+                    if latest_ctx:
+                        latest_ctx["is_at_mentioned"] = True
+                        await self._respond(latest_ctx, event)
             
             self._at_tasks[group_id] = asyncio.create_task(_at_respond())
             return
@@ -203,7 +202,6 @@ class QJinEraPlugin(Plugin):
         context["should_return_summary"] = True
         
         # [Phase 3] 从 context 提取实体，并去 world_lore 表查数据给 Chat Writer
-        from services.storage import world_lore
         entities = context.get("mentioned_entities")
         if entities:
             lores = world_lore.get_by_entities(str(event.group_id), entities)
@@ -221,7 +219,7 @@ class QJinEraPlugin(Plugin):
         if summary:
             topic_manager.update_summary(str(event.group_id), summary)
 
-        bot_id = str(getattr(event, "self_id", config.bot.admin_qq))
+        bot_id = str(event.self_id)
 
         for msg in messages:
             delay = random.uniform(0.3, 1.2) + len(msg) * 0.05
@@ -231,8 +229,6 @@ class QJinEraPlugin(Plugin):
 
     async def _extract_user_memories(self, group_id: str, user_id: str) -> None:
         """从当前话题中提取用户的新事实和群世界观（World Lore）。"""
-        from services.storage import world_lore
-        
         topic = topic_manager.get_current_topic(group_id)
         if not topic:
             return
@@ -246,24 +242,18 @@ class QJinEraPlugin(Plugin):
         # 传递最近 10 条带身份和格式的消息，好让 LLM 能提取出 source_id 和 subject_id
         recent = []
         for m in msgs[-10:]:
-            content_val = m['content']
-            text_content = content_val.get("text", "") if isinstance(content_val, dict) else str(content_val)
+            text_content = m["content"].get("text", "")
             recent.append(f"[{datetime.datetime.fromtimestamp(m['timestamp']).strftime('%H:%M:%S')}] {m.get('nickname') or m['user_id']}({m['user_id']}): {text_content}")
 
         active_memories = mem_store.get_for_context(user_id, limit=20)
         extraction_result = await llm.extract_memories(recent, active_memories)
 
-        if extraction_result is None:
+        if not extraction_result:
             logger.warning("记忆提取失败 (API 调用异常)，跳过 [用户%s]", user_id)
             return
 
-        if not isinstance(extraction_result, dict):
-            # 兼容旧逻辑
-            facts = extraction_result
-            lores = []
-        else:
-            facts = extraction_result.get("facts", [])
-            lores = extraction_result.get("world_lore", [])
+        facts = extraction_result.get("facts", [])
+        lores = extraction_result.get("world_lore", [])
 
         for fact_dict in facts:
             # 兼容：如果 LLM 没有提取 subject_id，我们就认为是关于这个用户的
@@ -300,14 +290,11 @@ class QJinEraPlugin(Plugin):
 IMAGE_DIR = "data/images"
 os.makedirs(IMAGE_DIR, exist_ok=True)
 
-from typing import Any
 
 async def _preprocess_message(raw: str) -> tuple[dict[str, Any], list[str]]:
     """
     预处理 CQ 码消息，将表情替换为文本标记，提取并下载图片 URL，返回 JSON string 和 memory_images 字典。
     """
-    from services.cq_faces import get_face_text
-
     # 1. 替换 CQ:face
     def replace_face(match):
         cq_content = match.group(1)
@@ -323,9 +310,7 @@ async def _preprocess_message(raw: str) -> tuple[dict[str, Any], list[str]]:
     
     # 建立一个占位符字典，用于稍后替换 raw 中的图片 CQ 码
     image_replacements = {}
-    
-    import html
-    
+
     image_matches = re.finditer(r'\[CQ:image,([^\]]+)\]', raw)
     for match in image_matches:
         full_match = match.group(0)
