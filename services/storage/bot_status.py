@@ -21,11 +21,36 @@ async def get(bot_id: str) -> dict | None:
         if not row:
             return None
         data = dict(row)
-        if isinstance(data.get("active_concerns"), str):
+        if data.get("energy") is None:
+            data["energy"] = 100.0
+        if data.get("mood") is None:
+            data["mood"] = "平静"
+        if data.get("current_state") is None:
+            data["current_state"] = "active"
+        if data.get("loneliness") is None:
+            data["loneliness"] = 0.0
+        if data.get("dopamine") is None:
+            data["dopamine"] = 50.0
+        if data.get("current_activity") is None:
+            data["current_activity"] = ""
+        if data.get("focus_user") is None:
+            data["focus_user"] = ""
+        if data.get("cur_objective") is None:
+            data["cur_objective"] = ""
+        if data.get("empathy_mood") is None:
+            data["empathy_mood"] = ""
+        if data.get("last_updated") is None:
+            data["last_updated"] = time.time()
+
+        concerns = data.get("active_concerns")
+        if isinstance(concerns, str):
             try:
-                data["active_concerns"] = json.loads(data["active_concerns"])
+                concerns = json.loads(concerns)
             except Exception:
-                data["active_concerns"] = []
+                concerns = []
+        if not isinstance(concerns, list):
+            concerns = []
+        data["active_concerns"] = concerns
         return data
 
 
@@ -84,8 +109,8 @@ async def update_state(bot_id: str, **kwargs) -> None:
     """按需更新 Bot 的部分状态字段。"""
     if not kwargs:
         return
-    now = time.time()
-    kwargs["last_updated"] = now
+    if "last_updated" not in kwargs:
+        kwargs["last_updated"] = time.time()
     if "active_concerns" in kwargs and isinstance(kwargs["active_concerns"], (list, dict)):
         kwargs["active_concerns"] = json.dumps(kwargs["active_concerns"], ensure_ascii=False)
 

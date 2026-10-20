@@ -21,7 +21,7 @@ from alicebot.adapter.cqhttp.event import GroupMessageEvent
 from config import config
 from logger import get_logger
 from models.message import MessageContent
-from services import llm
+from services import life_engine, llm
 from services.commands import handle_command
 from services.message_preprocessor import is_mentioned, preprocess_message
 from services.storage import (
@@ -155,6 +155,10 @@ class QJinEraPlugin(Plugin):
             if not context:
                 return
 
+            # 注入当前 bot_status 以便 Judge 感知生理状态与省电模式（自动补全静默漂移）
+            bot_st = await life_engine.ensure_tick(bot_id)
+            context["bot_status"] = bot_st
+
             logger.debug("防抖结束，咨询 Judge [群%s]", group_id)
             result = await llm.judge_interruption(context)
 
@@ -172,15 +176,22 @@ class QJinEraPlugin(Plugin):
                 context.get("topic_summary", ""),
             )
 
-            # 心智接力：更新 bot_status 高维状态
+            # 交互驱动：计算思考消耗与多巴胺流转
+            energy_cost = state_updates.get("energy_cost") if "energy_cost" in state_updates else result.get("energy_cost")
+            dopamine_delta = state_updates.get("dopamine_delta") if "dopamine_delta" in state_updates else result.get("dopamine_delta")
+            if energy_cost is not None or dopamine_delta is not None:
+                await life_engine.apply_interaction_cost(
+                    bot_id,
+                    energy_cost=energy_cost,
+                    dopamine_delta=dopamine_delta,
+                )
+
+            # 心智接力：更新 bot_status 高维状态（排除由 life_engine 状态机维护的字段）
             bot_updates = {}
             for field in [
                 "empathy_mood",
                 "cur_objective",
                 "focus_user",
-                "current_activity",
-                "loneliness",
-                "dopamine",
                 "active_concerns",
             ]:
                 if field in state_updates and state_updates[field] is not None:
@@ -266,10 +277,8 @@ class QJinEraPlugin(Plugin):
         context["should_return_summary"] = True
         bot_id = str(event.self_id)
 
-        # 注入 bot_status 高维心智
-        bot_st = await bot_status_store.get(bot_id)
-        if not bot_st:
-            bot_st = {"bot_id": bot_id, "energy": 100.0, "mood": "平静"}
+        # 注入 bot_status 高维心智（自动补全静默漂移）
+        bot_st = await life_engine.ensure_tick(bot_id)
         # 如果 context 中有 Judge 实时更新的情绪/目标/专注用户，同步体现
         if context.get("empathy_mood"):
             bot_st["empathy_mood"] = context["empathy_mood"]
@@ -278,6 +287,13 @@ class QJinEraPlugin(Plugin):
         if context.get("focus_user"):
             bot_st["focus_user"] = context["focus_user"]
         context["bot_status"] = bot_st
+
+        is_power_saving = life_engine.is_low_energy(bot_st)
+        is_sleeping = bot_st.get("current_state") == life_engine.STATE_SLEEPING
+        if is_power_saving:
+            logger.info("🔋 [LifeEngine] Bot %s 处于低电量省电模式 (精力: %s)，开启慵懒极简回复", bot_id, bot_st.get("energy"))
+        elif is_sleeping:
+            logger.info("🌙 [LifeEngine] Bot %s 处于夜间休眠中，开启深夜被唤醒极简回复", bot_id)
 
         # [Phase 3] 从 context 提取实体，并去 world_lore 表查数据给 Chat Writer
         entities = context.get("mentioned_entities")
@@ -294,12 +310,28 @@ class QJinEraPlugin(Plugin):
         messages = chat_result.get("messages", [])
         summary = chat_result.get("summary")
 
+        # 交互驱动：计算写手模型输出的思维消耗与多巴胺流动
+        writer_energy_cost = chat_result.get("energy_cost")
+        writer_dopamine_delta = chat_result.get("dopamine_delta")
+        if messages and writer_energy_cost is None:
+            # 发言默认消耗微量脑力（2.0），并略微提升多巴胺
+            writer_energy_cost = 2.0
+            if writer_dopamine_delta is None:
+                writer_dopamine_delta = 1.0
+
+        if writer_energy_cost is not None or writer_dopamine_delta is not None:
+            await life_engine.apply_interaction_cost(
+                bot_id,
+                energy_cost=writer_energy_cost,
+                dopamine_delta=writer_dopamine_delta,
+            )
+
         if summary:
             await topic_manager.update_summary(str(event.group_id), summary)
 
-        # 危机模式安全防护：如果处于 crisis 断路器状态，严格限制回复条数以防多条轰炸，且减少打字延迟
+        # 危机模式、低电量省电模式与夜间休眠防护：严格限制回复条数为 1，防止长篇轰炸，保持松弛与专注
         is_crisis = context.get("trigger_level") == "crisis"
-        if is_crisis and messages:
+        if (is_crisis or is_power_saving or is_sleeping) and messages:
             messages = messages[:1]
 
         for msg in messages:

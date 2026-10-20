@@ -6,8 +6,10 @@ LLM 服务 — 封装所有与大模型的交互。
 
 from __future__ import annotations
 
+import ast
 import datetime
 import json
+import re
 import time
 from typing import Any
 
@@ -81,6 +83,174 @@ def _is_503_error(e: BaseException) -> bool:
         return True
     return False
 
+def _extract_json_container(text: str) -> str:
+    """从可能混有 Markdown 代码块、前后说明文字的内容中，精确提取最外层的 JSON 结构（对象 {...} 或数组 [...]）。"""
+    stripped = text.strip()
+
+    # 1. 若最外层被 Markdown 代码块包裹，去除首尾代码块标记
+    if stripped.startswith("```"):
+        first_newline = stripped.find("\n")
+        last_fence = stripped.rfind("```")
+        if last_fence > 0 and first_newline != -1 and first_newline < last_fence:
+            stripped = stripped[first_newline + 1 : last_fence].strip()
+
+    # 2. 寻找第一个有效 JSON 容器的起始符（{ 或 [）
+    start_brace = stripped.find("{")
+    start_bracket = stripped.find("[")
+
+    if start_brace == -1 and start_bracket == -1:
+        return stripped
+
+    if start_brace != -1 and (start_bracket == -1 or start_brace < start_bracket):
+        open_char, close_char = "{", "}"
+        start_idx = start_brace
+    else:
+        open_char, close_char = "[", "]"
+        start_idx = start_bracket
+
+    # 3. 具有字符串字面量感知的括号计数器，精确定位最外层匹配的闭合符号
+    depth = 0
+    in_string = False
+    escape = False
+    end_idx = -1
+
+    for idx in range(start_idx, len(stripped)):
+        ch = stripped[idx]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+        else:
+            if ch == '"':
+                in_string = True
+            elif ch == open_char:
+                depth += 1
+            elif ch == close_char:
+                depth -= 1
+                if depth == 0:
+                    end_idx = idx
+                    break
+
+    if end_idx != -1:
+        return stripped[start_idx : end_idx + 1]
+    return stripped[start_idx:]
+
+
+def _clean_json_syntax(text: str) -> str:
+    """在保持所有字符串字面量（包含转义引号与内部 URL/符号）完好无损的前提下，
+    修复 JSON 结构外部的非法语法：
+    - 剥离 // 行注释与 /* */ 块注释（不误伤字符串内的 http://）
+    - 修复正数前带加号的非法数字（如 : +1.0, [ +2, , +5 -> : 1.0, [ 2, , 5）
+    - 修复缺少前导 0 的小数（如 : +.5, : .5 -> : 0.5）
+    - 修复尾随逗号（如 , } -> }, , ] -> ]）
+    - 修复 Python 命名常量（如 True -> true, False -> false, None -> null）
+    """
+    segments: list[tuple[bool, str]] = []
+    i = 0
+    n = len(text)
+    in_string = False
+    escape = False
+    curr_chunk: list[str] = []
+
+    while i < n:
+        c = text[i]
+        if in_string:
+            curr_chunk.append(c)
+            if escape:
+                escape = False
+            elif c == "\\":
+                escape = True
+            elif c == '"':
+                in_string = False
+                segments.append((True, "".join(curr_chunk)))
+                curr_chunk = []
+            i += 1
+        else:
+            if c == '"':
+                if curr_chunk:
+                    segments.append((False, "".join(curr_chunk)))
+                    curr_chunk = []
+                in_string = True
+                curr_chunk.append(c)
+                i += 1
+            elif c == "/" and i + 1 < n and text[i + 1] == "/":
+                # 单行注释，跳到行尾
+                i += 2
+                while i < n and text[i] != "\n":
+                    i += 1
+            elif c == "/" and i + 1 < n and text[i + 1] == "*":
+                # 块注释，跳到 */
+                i += 2
+                while i + 1 < n and not (text[i] == "*" and text[i + 1] == "/"):
+                    i += 1
+                i += 2
+            else:
+                curr_chunk.append(c)
+                i += 1
+
+    if curr_chunk:
+        segments.append((in_string, "".join(curr_chunk)))
+
+    # 阶段 2：仅对非字符串片段进行语法修复
+    repaired_parts: list[str] = []
+    for is_str, chunk in segments:
+        if is_str:
+            repaired_parts.append(chunk)
+        else:
+            # 修复 +数字 与前导 0 缺失
+            chunk = re.sub(r"\+\s*(\.\d+(?:[eE][+-]?\d+)?)", r"0\1", chunk)
+            chunk = re.sub(r"\+\s*(\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)", r"\1", chunk)
+            chunk = re.sub(r"([:\[,]\s*)\.(\d+)", r"\g<1>0.\2", chunk)
+
+            # 修复 Python 风格字面量 True/False/None
+            chunk = re.sub(r"\bTrue\b", "true", chunk)
+            chunk = re.sub(r"\bFalse\b", "false", chunk)
+            chunk = re.sub(r"\bNone\b", "null", chunk)
+
+            # 修复尾随逗号 (如 , } 或 , ])
+            chunk = re.sub(r",+\s*([}\]])", r"\1", chunk)
+
+            repaired_parts.append(chunk)
+
+    return "".join(repaired_parts).strip()
+
+
+def _repair_json(content: str) -> str:
+    """对 LLM 返回的潜在非标准 JSON 字符串进行容错修复。"""
+    container = _extract_json_container(content)
+    return _clean_json_syntax(container)
+
+
+def _parse_json(content: str) -> Any:
+    """尝试解析 JSON，若失败则经由 _repair_json 修复后再次解析。"""
+    try:
+        return json.loads(content)
+    except Exception:
+        pass
+
+    repaired = _repair_json(content)
+    try:
+        return json.loads(repaired, strict=False)
+    except Exception:
+        pass
+
+    # 尝试处理单引号 Python 字典格式（某些轻量模型可能输出 Python 字典表示）
+    try:
+        eval_candidate = re.sub(r"\btrue\b", "True", repaired)
+        eval_candidate = re.sub(r"\bfalse\b", "False", eval_candidate)
+        eval_candidate = re.sub(r"\bnull\b", "None", eval_candidate)
+        evaluated = ast.literal_eval(eval_candidate)
+        if isinstance(evaluated, (dict, list)):
+            return evaluated
+    except Exception:
+        pass
+
+    return json.loads(repaired, strict=False)
+
+
 async def _call(
     model: str,
     system_prompt: str,
@@ -88,10 +258,16 @@ async def _call(
     images: list[str] = None,
     *,
     json_mode: bool = True,
-) -> dict[str, Any]:
+) -> dict[str, Any] | str | None:
     """统一的 LLM 调用入口。"""
-    logger.debug("请求 %s ... system_prompt 长度: %d, user_content 长度: %d\n完整 user_content:\n%s", model, len(system_prompt), len(user_content), user_content)
-    
+    logger.debug(
+        "请求 %s ... system_prompt 长度: %d, user_content 长度: %d\n完整 user_content:\n%s",
+        model,
+        len(system_prompt),
+        len(user_content),
+        user_content,
+    )
+
     images = images or []
     if images:
         message_content = [{"type": "text", "text": user_content}]
@@ -105,6 +281,7 @@ async def _call(
     else:
         message_content = user_content
 
+    # 1. 模型 API 请求
     try:
         async for attempt in AsyncRetrying(
             stop=stop_after_attempt(_maxtries),
@@ -121,11 +298,32 @@ async def _call(
                     ],
                     response_format={"type": "json_object"} if json_mode else None,
                 )
-                content = resp.choices[0].message.content
-                logger.debug("响应 (%s): %s", model, content if content else "")
-                return json.loads(content) if json_mode else content
+                if not resp.choices:
+                    content = ""
+                else:
+                    content = resp.choices[0].message.content or ""
+                logger.debug("响应 (%s): %s", model, content)
+    except Exception as e:
+        logger.error("LLM API 请求失败 (%s): %s", model, e, exc_info=True)
+        return None
+
+    if not json_mode:
+        return content
+
+    # 2. JSON 内容解析与容错修复
+    if not content:
+        logger.error("LLM 返回内容为空 (%s)", model)
+        return None
+
+    try:
+        return _parse_json(content)
     except Exception:
-        logger.error("LLM 调用失败 (%s)", model, exc_info=True)
+        logger.error(
+            "LLM 返回内容 JSON 解析失败 (%s)。原始内容:\n%s",
+            model,
+            content,
+            exc_info=True,
+        )
         return None
 
 
@@ -138,15 +336,32 @@ def _format_ts(ts: float) -> str:
 #  公开 API
 # ---------------------------------------------------------------------------
 
+def _sanitize_bot_status(status: Any) -> dict[str, Any] | None:
+    """对传入模板的 bot_status 字典进行容错与类型安全规范化。"""
+    if not isinstance(status, dict):
+        return None
+    st = status.copy()
+    if "energy" in st and (st["energy"] is None or not isinstance(st["energy"], (int, float))):
+        try:
+            st["energy"] = float(st["energy"])
+        except (ValueError, TypeError):
+            st["energy"] = 100.0
+    return st
+
+
 async def judge_interruption(context: dict[str, Any]) -> dict[str, Any]:
     """调用 Judge 模型判断是否插话。"""
     ctx = context.copy()
     bot_id = ctx.get("bot_id", "")
+    bot_status = _sanitize_bot_status(ctx.pop("bot_status", None))
     group_context = ctx.pop("group_context", None) or {}
     recent_images = ctx.pop("recent_images", [])
 
     system_prompt = judge_template.render(
-        persona=_persona_data, bot_id=bot_id, group_context=group_context,
+        persona=_persona_data,
+        bot_id=bot_id,
+        group_context=group_context,
+        bot_status=bot_status,
     )
     return await _call(
         _judge_model,
@@ -165,11 +380,8 @@ async def generate_chat(context: dict[str, Any]) -> dict[str, Any]:
     group_context = ctx.pop("group_context", None) or {}
     recent_images = ctx.pop("recent_images", [])
 
-    bot_status = ctx.pop("bot_status", None) or {"energy": 100.0, "mood": "平静"}
-    if isinstance(bot_status, dict):
-        bot_status = bot_status.copy()
-    else:
-        bot_status = dict(bot_status)
+    raw_bot_status = ctx.pop("bot_status", None) or {"energy": 100.0, "mood": "平静"}
+    bot_status = _sanitize_bot_status(raw_bot_status) or {"energy": 100.0, "mood": "平静"}
 
     intervention_reason = ctx.pop("intervention_reason", "")
     circuit_breaker_directive = ctx.pop("circuit_breaker_directive", "")
@@ -205,9 +417,13 @@ async def generate_chat(context: dict[str, Any]) -> dict[str, Any]:
     )
 
 
-async def generate_proactive_topic() -> dict[str, Any]:
+async def generate_proactive_topic(bot_status: dict[str, Any] | None = None) -> dict[str, Any]:
     """生成主动话题（冷场时使用）。"""
-    system_prompt = proactive_template.render(persona=_persona_data)
+    sanitized_status = _sanitize_bot_status(bot_status)
+    system_prompt = proactive_template.render(
+        persona=_persona_data,
+        bot_status=sanitized_status,
+    )
     return await _call(
         _chat_model,
         system_prompt,

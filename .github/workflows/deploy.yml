@@ -1,0 +1,26 @@
+name: Deploy to Raspberry Pi
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+    steps:
+      - name: Deploy and Reload
+        run: |
+          cd /home/lnf/QJinEra
+
+          echo "==== [1/3] 拉取最新代码 ===="
+          git fetch origin main
+          git reset --hard origin/main
+
+          echo "==== [2/3] 使用 uv 同步依赖 ===="
+          uv sync
+
+          echo "==== [3/3] 重启 PM2 托管的 Bot ===="
+          pm2 restart qjinera || pm2 start /home/lnf/QJinEra/main.py --name qjinera --interpreter /home/lnf/QJinEra/.venv/bin/python --cwd /home/lnf/QJinEra --env HTTP_PROXY="http://127.0.0.1:7890" --env HTTPS_PROXY="http://127.0.0.1:7890"
+
+          echo "==== [Status] 查看 PM2 状态 ===="
+          pm2 list

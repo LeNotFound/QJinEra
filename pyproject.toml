@@ -30,7 +30,7 @@ dev-dependencies = [
 ]
 
 [[tool.uv.index]]
-url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
+url = "https://mirrors.bfsu.edu.cn/pypi/web/simple"
 default = true
 
 [tool.pytest.ini_options]

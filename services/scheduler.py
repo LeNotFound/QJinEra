@@ -13,9 +13,12 @@ from alicebot import Bot
 
 from config import config
 from logger import get_logger
-from services import llm
+from services import life_engine, llm
 from services.memory_service import consolidate_group_vibe_task, consolidate_if_needed
-from services.storage import groups as group_store, memories
+from services.storage import (
+    groups as group_store,
+    memories,
+)
 from services.topic import topic_manager
 from utils import spawn_task
 
@@ -91,76 +94,108 @@ async def _init_groups(bot: Bot) -> bool:
 async def _loop(bot: Bot) -> None:
     """每分钟执行一次巡检。"""
     try:
+        # 0. 启动时立即推进一次生命引擎，补全离线/休眠时间并初始化状态
+        try:
+            await life_engine.tick(_bot_self_id)
+        except Exception:
+            logger.error("生命引擎初始 tick 失败", exc_info=True)
+
         while True:
             await asyncio.sleep(60)
 
-        # 0. 若启动时 WebSocket 未就绪，连接建立后自动重试初始化群列表
-        if not _groups_initialized:
-            await _init_groups(bot)
+            # 0. 若启动时 WebSocket 未就绪，连接建立后自动重试初始化群列表
+            if not _groups_initialized:
+                await _init_groups(bot)
 
-        # 1. 检查过期话题 → 触发 Cyber Echo 及其垃圾回收
-        try:
-            pending = await topic_manager.check_expired_topics()
-            for group_id, participants in pending:
-                for user_id in participants:
-                    spawn_task(consolidate_if_needed(user_id, group_id))
-                # 群氛围更新（与用户记忆巩固并行）
-                spawn_task(consolidate_group_vibe_task(group_id))
-
-            # 当本轮有话题过期引发 Cyber Echo 时，顺便进行垃圾回收
-            if pending:
-                pruned = await memories.prune_expired(retention_hours=24)
-                if pruned:
-                    logger.debug("清理了 %d 条过期短期记忆", pruned)
-        except Exception:
-            logger.error("巡检过期话题失败", exc_info=True)
-
-        # 2. 主动发起聊天（冷场检测）
-        now = time.time()
-        for group_id, last_time in list(topic_manager.group_last_activity.items()):
-            if not topic_manager.is_group_allowed(group_id):
-                continue
-            if now - last_time <= _proactive_interval:
-                continue
-
-            current_topic = await topic_manager.get_current_topic(group_id)
-            if current_topic and current_topic.get("messages"):
-                if str(current_topic["messages"][-1]["user_id"]) == _bot_self_id:
-                    continue
-
+            # 1. 推进生命引擎自然状态机 (0 Token 昼夜作息与离线生活模拟)
+            bot_st = None
             try:
-                logger.info("群 %s 冷场超过 %d 分钟，主动发起话题",
-                            group_id, config.topic.proactive_chat_interval_minutes)
-
-                result = await llm.generate_proactive_topic()
-                if result is None:
-                    logger.warning("主动话题生成失败 (API 调用异常)，跳过 [群%s]", group_id)
-                    continue
-
-                messages = result.get("messages", [])
-
-                if not messages:
-                    continue
-
-                # 先更新时间，避免重复触发
-                topic_manager.group_last_activity[group_id] = now
-
-                adapter = _get_ready_adapter(bot)
-                if not adapter:
-                    logger.warning("发送主动消息失败：适配器未处于连接就绪状态")
-                    continue
-
-                for msg in messages:
-                    await adapter.call_api(
-                        "send_group_msg", group_id=int(group_id), message=msg,
-                    )
-                    await topic_manager.add_bot_message(group_id, msg, _bot_self_id, config.bot.name)
-                    await asyncio.sleep(2)
-
-                logger.info("主动消息已发送 [群%s]: %s", group_id, messages)
-
+                bot_st = await life_engine.tick(_bot_self_id)
             except Exception:
-                logger.error("主动聊天失败 [群%s]", group_id, exc_info=True)
+                logger.error("生命引擎 tick 失败", exc_info=True)
+
+            # 2. 检查过期话题 → 触发 Cyber Echo 及其垃圾回收
+            try:
+                pending = await topic_manager.check_expired_topics()
+                for group_id, participants in pending:
+                    for user_id in participants:
+                        spawn_task(consolidate_if_needed(user_id, group_id))
+                    # 群氛围更新（与用户记忆巩固并行）
+                    spawn_task(consolidate_group_vibe_task(group_id))
+
+                # 当本轮有话题过期引发 Cyber Echo 时，顺便进行垃圾回收
+                if pending:
+                    pruned = await memories.prune_expired(retention_hours=24)
+                    if pruned:
+                        logger.debug("清理了 %d 条过期短期记忆", pruned)
+            except Exception:
+                logger.error("巡检过期话题失败", exc_info=True)
+
+            # 3. 主动发起聊天（冷场检测）
+            now = time.time()
+            for group_id, last_time in list(topic_manager.group_last_activity.items()):
+                if not topic_manager.is_group_allowed(group_id):
+                    continue
+                if now - last_time <= _proactive_interval:
+                    continue
+
+                current_topic = await topic_manager.get_current_topic(group_id)
+                if current_topic and current_topic.get("messages"):
+                    if str(current_topic["messages"][-1]["user_id"]) == _bot_self_id:
+                        continue
+
+                # 昼夜作息与低电量检测：若夜间处于休眠状态或精力极低 (<15)，跳过主动冷场发起
+                is_sleeping = (
+                    life_engine.is_sleep_time(now)
+                    or (bool(bot_st) and bot_st.get("current_state") == life_engine.STATE_SLEEPING)
+                )
+                if is_sleeping:
+                    logger.debug("Bot 当前处于夜间休眠状态，跳过主动话题发起 [群%s]", group_id)
+                    continue
+
+                bot_energy = life_engine._safe_float(bot_st.get("energy") if bot_st else None, 100.0)
+                if bot_energy < 15.0:
+                    logger.debug("Bot 当前精力极低 (<15)，跳过主动话题发起以蓄能 [群%s]", group_id)
+                    continue
+
+                try:
+                    logger.info("群 %s 冷场超过 %d 分钟，结合生活引擎状态主动发起话题",
+                                group_id, config.topic.proactive_chat_interval_minutes)
+
+                    result = await llm.generate_proactive_topic(bot_status=bot_st)
+                    if result is None:
+                        logger.warning("主动话题生成失败 (API 调用异常)，跳过 [群%s]", group_id)
+                        continue
+
+                    messages = result.get("messages", [])
+
+                    if not messages:
+                        continue
+
+                    # 先更新时间，避免重复触发
+                    topic_manager.group_last_activity[group_id] = now
+
+                    adapter = _get_ready_adapter(bot)
+                    if not adapter:
+                        logger.warning("发送主动消息失败：适配器未处于连接就绪状态")
+                        continue
+
+                    for msg in messages:
+                        await adapter.call_api(
+                            "send_group_msg", group_id=int(group_id), message=msg,
+                        )
+                        await topic_manager.add_bot_message(group_id, msg, _bot_self_id, config.bot.name)
+                        await asyncio.sleep(2)
+
+                    logger.info("主动消息已发送 [群%s]: %s", group_id, messages)
+
+                    # 主动发言消耗微量精力并缓解孤独，并同步更新局部 bot_st
+                    bot_st = await life_engine.apply_interaction_cost(
+                        _bot_self_id, energy_cost=2.0, dopamine_delta=3.0
+                    )
+
+                except Exception:
+                    logger.error("主动聊天失败 [群%s]", group_id, exc_info=True)
     except asyncio.CancelledError:
         logger.debug("巡检循环收到终止信号，已安全退出")
 
