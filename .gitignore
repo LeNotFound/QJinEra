@@ -212,9 +212,16 @@ napcat.bat
 *.db-wal
 *.db-shm
 qjinera.db*
+*.bak
 run_test.bat
 test_log.txt
 config.toml
 .gemini/
 qjinera.ujson
 data/images
+
+# Temporary & Archive directories
+tmp/
+docs/archive/
+
+scripts/

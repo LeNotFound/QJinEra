@@ -463,7 +463,7 @@ async def test_writer_energy_cost_fallback_and_sleeping_reply():
         current_state="sleeping",
         loneliness=10.0,
         dopamine=50.0,
-        last_updated=t_night.timestamp(),
+        last_updated=time.time(),
     )
 
     # Writer 返回多条消息，但 LLM 遗漏了 energy_cost

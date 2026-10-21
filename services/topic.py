@@ -360,15 +360,15 @@ class TopicManager:
         if user_profile and user_profile.get("description"):
             user_desc = f"Current Speaker ({user_profile['nickname']}): {user_profile['description']}"
 
-        # 用户记忆
-        user_memories = await memories.get_for_context(user_id, limit=20)
+        # 用户记忆（带群组隐私作用域隔离）
+        user_memories = await memories.get_for_context(user_id, group_id=group_id, limit=20)
         memory_section = ""
         if user_memories:
             memory_section = "User Memories:\n" + "\n".join(f"- {m}" for m in user_memories)
 
-        # Bot 自身的记忆
+        # Bot 自身的记忆（带群组隐私作用域隔离）
         if bot_id:
-            bot_memories = await memories.get_for_context(bot_id, limit=20)
+            bot_memories = await memories.get_for_context(bot_id, group_id=group_id, limit=20)
             if bot_memories:
                 if memory_section:
                     memory_section += "\n\n"

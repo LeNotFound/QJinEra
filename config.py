@@ -31,6 +31,7 @@ class BotConfig(BaseModel):
     name: str = "柒槿年"
     english_name: str = "QJinEra"
     admin_qq: int = 0
+    aliases: list[str] = []
     plugins: list[str] = []
     plugin_dirs: list[str] = []
     adapters: list[str] = []

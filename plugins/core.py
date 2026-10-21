@@ -23,6 +23,13 @@ from logger import get_logger
 from models.message import MessageContent
 from services import life_engine, llm
 from services.commands import handle_command
+from services.identity import (
+    build_identity_map,
+    is_bot_self,
+    is_bot_self_memory,
+    resolve_subject_id,
+    sanitize_memory_content,
+)
 from services.message_preprocessor import is_mentioned, preprocess_message
 from services.storage import (
     bot_status as bot_status_store,
@@ -109,7 +116,7 @@ class QJinEraPlugin(Plugin):
 
             logger.info("被 @ 提及，直接回复 [群%s]", group_id)
 
-            spawn_task(self._extract_user_memories(group_id, user_id))
+            spawn_task(self._extract_user_memories(group_id, user_id, bot_id))
 
             # 使用锁避免并发回答
             async def _at_respond():
@@ -263,7 +270,7 @@ class QJinEraPlugin(Plugin):
             # 记忆提取信号
             if result.get("has_significant_info"):
                 logger.debug("Judge 发现重要信息，提取记忆/世界设定 [群:%s 用户:%s]", group_id, user_id)
-                spawn_task(self._extract_user_memories(group_id, user_id))
+                spawn_task(self._extract_user_memories(group_id, user_id, bot_id))
 
             # 插话判定（传入当前的上下文）
             if result.get("should_intervene") or trigger_level == "crisis":
@@ -340,7 +347,7 @@ class QJinEraPlugin(Plugin):
             await event.reply(msg)
             await topic_manager.add_bot_message(str(event.group_id), msg, bot_id, config.bot.name)
 
-    async def _extract_user_memories(self, group_id: str, user_id: str) -> None:
+    async def _extract_user_memories(self, group_id: str, user_id: str, bot_id: str = "") -> None:
         """从当前话题中提取用户的新事实和群世界观（World Lore）。"""
         topic = await topic_manager.get_current_topic(group_id)
         if not topic:
@@ -354,16 +361,26 @@ class QJinEraPlugin(Plugin):
 
         # 传递最近 10 条带身份和格式的消息，好让 LLM 能提取出 source_id 和 subject_id
         recent = []
+        user_pairs = []
         for m in msgs[-10:]:
             msg_content = MessageContent.from_raw(m["content"])
             text_content = msg_content.text
+            nick = m.get('nickname') or m['user_id']
             recent.append(
                 f"[{datetime.datetime.fromtimestamp(m['timestamp']).strftime('%H:%M:%S')}] "
-                f"{m.get('nickname') or m['user_id']}({m['user_id']}): {text_content}"
+                f"{nick}({m['user_id']}): {text_content}"
             )
+            if m.get("user_id") and m.get("nickname"):
+                user_pairs.append((str(m["user_id"]), str(m["nickname"])))
 
-        active_memories = await mem_store.get_for_context(user_id, limit=20)
-        extraction_result = await llm.extract_memories(recent, active_memories)
+        if not bot_id:
+            bot_id = str(getattr(self.event, "self_id", config.bot.admin_qq))
+
+        identity_map = build_identity_map(user_pairs)
+        active_memories = await mem_store.get_for_context(user_id, group_id=group_id, limit=20)
+        extraction_result = await llm.extract_memories(
+            recent, active_memories, identity_map=identity_map, bot_id=bot_id
+        )
 
         if not extraction_result:
             logger.warning("记忆提取失败 (API 调用异常)，跳过 [用户%s]", user_id)
@@ -373,26 +390,46 @@ class QJinEraPlugin(Plugin):
         lores = extraction_result.get("world_lore", [])
 
         for fact_dict in facts:
-            # 兼容：如果 LLM 没有提取 subject_id，我们就认为是关于这个用户的
-            if "subject_id" not in fact_dict:
-                fact_dict["subject_id"] = user_id
-            if "source_id" not in fact_dict:
-                fact_dict["source_id"] = user_id
+            raw_subj = str(fact_dict.get("subject_id") or user_id).strip()
+            raw_src = str(fact_dict.get("source_id") or user_id).strip()
+            content = str(fact_dict.get("content") or "").strip()
 
-            await mem_store.add(user_id, group_id, fact_dict)
+            # 反向解析主客体 QQ 号，杜绝名称残留导致孤儿记忆
+            subj = resolve_subject_id(raw_subj, identity_map, fallback_id=user_id)
+            src = resolve_subject_id(raw_src, identity_map, fallback_id=user_id)
+
+            # 守卫：拦截机器人自指与外部化记忆
+            if is_bot_self(subj, bot_id) or is_bot_self(raw_subj, bot_id) or is_bot_self_memory(content, bot_id):
+                logger.info("守卫拦截机器人自指或虚构记忆入库: [subject:%s] %s", subj, content)
+                continue
+
+            # 具名化净化（消除"该用户"等机械公文腔）
+            subj_name = identity_map.get(subj, "")
+            clean_content = sanitize_memory_content(content, subj_name)
+
+            fact_dict["subject_id"] = subj
+            fact_dict["source_id"] = src
+            fact_dict["content"] = clean_content
+
+            await mem_store.add(user_id, group_id, fact_dict, bot_id=bot_id)
             logger.info(
                 "+ 事实: %s [涉及对象:%s, 来源:%s]",
-                fact_dict["content"],
-                fact_dict["subject_id"],
-                fact_dict["source_id"],
+                clean_content,
+                subj,
+                src,
             )
 
         for lore in lores:
             name = lore.get("entity_name")
             desc = lore.get("description")
             if name and desc:
-                await world_lore.add_or_update(group_id, user_id, name, desc)
-                logger.info("+ 世界观: [%s] %s [提供者%s]", name, desc, user_id)
+                cleaned_name = str(name).strip()
+                if is_bot_self(cleaned_name, bot_id):
+                    logger.info("守卫拦截机器人自指设定入库 World Lore: [%s] %s", cleaned_name, desc)
+                    continue
+                clean_desc = sanitize_memory_content(str(desc).strip())
+                await world_lore.add_or_update(group_id, user_id, cleaned_name, clean_desc, bot_id=bot_id)
+                logger.info("+ 世界观: [%s] %s [提供者%s]", cleaned_name, clean_desc, user_id)
 
     # ------------------------------------------------------------------
     #  工具方法

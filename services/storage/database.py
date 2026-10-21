@@ -69,6 +69,13 @@ async def _migrate_schema(db: aiosqlite.Connection) -> None:
         if col_name not in bot_cols:
             await db.execute(f"ALTER TABLE bot_status ADD COLUMN {col_name} {col_def}")
 
+    # 检查 world_lore 表列
+    cursor = await db.execute("PRAGMA table_info(world_lore)")
+    lore_rows = await cursor.fetchall()
+    lore_cols = {row["name"] for row in lore_rows}
+    if "scope" not in lore_cols:
+        await db.execute("ALTER TABLE world_lore ADD COLUMN scope TEXT DEFAULT 'group'")
+
 
 async def init_db() -> None:
     """初始化所有数据库表，启动时调用一次。"""
@@ -136,6 +143,7 @@ async def init_db() -> None:
                 source_id     TEXT    NOT NULL,
                 created_at    REAL    NOT NULL,
                 updated_at    REAL    NOT NULL,
+                scope         TEXT    DEFAULT 'group',
                 UNIQUE(group_id, entity_name)
             );
 

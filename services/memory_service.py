@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from logger import get_logger
 from services import llm
+from services.identity import build_identity_map
 from services.storage import groups as group_store, memories, topics, users
 
 logger = get_logger("MemoryService")
@@ -26,10 +27,20 @@ async def consolidate_if_needed(user_id: str, group_id: str) -> None:
 
     # 获取当前用户画像
     user = await users.get(group_id, user_id)
+    user_name = (user.get("nickname") if user and user.get("nickname") else "")
     current_desc = (user["description"] if user and user.get("description") else "New user.")
 
+    # 实体解析映射
+    identity_map = build_identity_map([(user_id, user_name)] if user_name else None)
+    resolved_name = identity_map.get(user_id, user_name or user_id)
+
     # 调用 LLM 巩固
-    result = await llm.consolidate_memory(current_desc, active_mem)
+    result = await llm.consolidate_memory(
+        current_profile=current_desc,
+        active_facts=active_mem,
+        user_name=resolved_name,
+        identity_map=identity_map,
+    )
     if not result:
         logger.warning("Cyber Echo：LLM 返回空结果，跳过")
         return

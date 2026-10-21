@@ -19,6 +19,7 @@ from tenacity import AsyncRetrying, stop_after_attempt, retry_if_exception, wait
 
 from config import config
 from logger import get_logger
+from services.identity import get_all_bot_aliases
 
 logger = get_logger("LLM")
 
@@ -398,6 +399,7 @@ async def generate_chat(context: dict[str, Any]) -> dict[str, Any]:
 
     system_prompt = chat_template.render(
         persona=_persona_data,
+        bot_aliases=sorted(list(get_all_bot_aliases(_persona_data))),
         bot_status=bot_status,
         user_profile=user_profile,
         world_lore=world_lore,
@@ -431,13 +433,23 @@ async def generate_proactive_topic(bot_status: dict[str, Any] | None = None) -> 
     )
 
 
-async def extract_memories(recent_messages: list[str], active_memories: list[str] = None) -> dict:
+async def extract_memories(
+    recent_messages: list[str],
+    active_memories: list[str] = None,
+    identity_map: dict[str, str] | None = None,
+    bot_id: str | None = None,
+) -> dict:
     """从用户消息中提取差异或新增的事实/记忆以及世界设定。"""
     user_content = "Recent User Messages:\n" + "\n".join(recent_messages)
     if active_memories:
         user_content += "\n\nKnown Active Memories:\n" + "\n".join(f"- {m}" for m in active_memories)
 
-    system_prompt = memory_extractor_template.render(persona=_persona_data, bot_id=_bot_id)
+    system_prompt = memory_extractor_template.render(
+        persona=_persona_data,
+        bot_id=bot_id or _bot_id,
+        bot_aliases=sorted(list(get_all_bot_aliases(_persona_data))),
+        identity_map=identity_map or {},
+    )
     result = await _call(
         _judge_model,
         system_prompt,
@@ -449,6 +461,8 @@ async def extract_memories(recent_messages: list[str], active_memories: list[str
 async def consolidate_memory(
     current_profile: str,
     active_facts: list[dict],
+    user_name: str | None = None,
+    identity_map: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Cyber Echo — 将碎片化事实融合进长期用户画像。"""
     facts_text = "\n".join(
@@ -460,7 +474,12 @@ async def consolidate_memory(
         f"New Active Facts (Current Time: {_format_ts(time.time())}):\n{facts_text}"
     )
     logger.info("巩固记忆：%d 条事实", len(active_facts))
-    system_prompt = memory_consolidator_template.render(persona=_persona_data, bot_id=_bot_id)
+    system_prompt = memory_consolidator_template.render(
+        persona=_persona_data,
+        bot_id=_bot_id,
+        user_name=user_name,
+        identity_map=identity_map or {},
+    )
     return await _call(_chat_model, system_prompt, user_content)
 
 
